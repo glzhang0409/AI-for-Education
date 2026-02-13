@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Docker 数据目录（存储在 D 盘项目目录中）
+docker-data/
+
+# 环境变量（包含敏感信息）
+.env
+
+# 日志
+*.log
+
+# 临时文件
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db

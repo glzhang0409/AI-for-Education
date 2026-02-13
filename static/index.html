@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ProgramMate编程学伴</title>
+    <!-- 添加marked.js库 -->
+    <script src="../static/js/marked.min.js"></script>
+    <!-- 添加代码高亮库 -->
+    <link rel="stylesheet" href="../static/css/github.min.css">
+    <script src="../static/js/highlight.min.js"></script>
+
+    <!-- 添加MathJax配置 -->
+    <script>
+        window.MathJax = {
+            tex: {
+                inlineMath: [['$', '$'], ['\\(', '\\)'], ['[', ']'], ['((', '))']], // 添加双小括号支持
+                displayMath: [['$$', '$$'], ['\\[', '\\]']],
+                processEscapes: true,
+                processEnvironments: true
+            },
+            options: {
+                skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+            },
+            startup: {
+                ready: () => {
+                    console.log('MathJax is loaded and ready.');
+                    MathJax.startup.defaultReady();
+                }
+            }
+        };
+    </script>
+    <!-- 使用更稳定的MathJax CDN -->
+    <script src="../static/js/polyfill.js"></script>
+    <script id="MathJax-script" async src="../static/js/tex-mml-chtml.js"></script>
+
+    <!-- 使用KaTeX替代MathJax -->
+    <link rel="stylesheet" href="../static/css/katex.min.css">
+    <script defer src="../static/js/katex.min.js"></script>
+    <script defer src="../static/js/auto-render.min.js"></script>
+
+    <!-- 添加Mermaid图表库 -->
+    <script src="/static/js/mermaid.min.js"></script>
+    <script>
+        // 初始化Mermaid配置
+        mermaid.initialize({
+            startOnLoad: false,
+            theme: 'default',
+            securityLevel: 'loose',
+            flowchart: {
+                useMaxWidth: true,
+                htmlLabels: true,
+                curve: 'basis'
+            }
+        });
+    </script>
+
+    <!-- 引入CSS文件 -->
+    <link rel="stylesheet" href="../static/styles.css">
+</head>
+
+<body>
+    <div class="container">
+        <h1>ProgramMate编程学伴</h1>
+
+        <!-- 导航栏 -->
+        <div class="nav-bar">
+            <button class="nav-btn active" onclick="switchPage('tutor')">编程助教</button>
+            <button class="nav-btn" onclick="switchPage('generator')">智能出题</button>
+            <button class="nav-btn" onclick="switchPage('teaching')">苏格拉底追问</button>
+            <button class="nav-btn" onclick="switchPage('testcase')">测试点生成</button>
+            <button class="nav-btn" onclick="window.location.href='hangfudao.html'">🚀 航辅导</button>
+        </div>
+
+        <!-- 编程助教页面 -->
+        <div id="tutor-page" class="page active">
+            <div class="input-area">
+                <div class="stage-label">编程问题：</div>
+                <textarea id="question-input" placeholder="请输入编程问题..."></textarea>
+            </div>
+
+            <!-- <div class="reference-area">
+                <div class="stage-label">
+                    参考答案：
+                    <button id="reference-lock-btn" class="lock-btn" onclick="return false;" title="功能暂时锁定">🔒 暂时锁定</button>
+                </div>
+                <textarea id="reference-input" placeholder="如果有参考答案代码，请粘贴在这里..." style="display: none;"></textarea>
+            </div> -->
+
+            <!-- 语言选择区域 -->
+            <div class="language-selection">
+                <div class="stage-label">编程语言选择：</div>
+                <div class="language-buttons">
+                    <button id="btn-c" class="language-btn active" onclick="selectLanguage('C')">C语言</button>
+                    <button id="btn-python" class="language-btn" onclick="selectLanguage('Python')">Python</button>
+                </div>
+            </div>
+
+            <!-- 模型选择区域 -->
+            <div class="language-selection">
+                <div class="stage-label">模型选择：</div>
+                <div class="language-buttons">
+                    <button id="btn-model-480b" class="language-btn active" onclick="selectModel('coder480b')">模型一：coder-普通版</button>
+                    <button id="btn-model-loopcoder" class="language-btn" onclick="selectModel('loopcoder')">模型二：loopcoder</button>
+                </div>
+            </div>
+
+            <div class="button-group">
+                <button id="btn-idea" onclick="askQuestion('思路')">思路</button>
+                <button id="btn-framework" onclick="askQuestion('框架')">框架</button>
+                <button id="btn-pseudocode" onclick="askQuestion('伪代码生成')">伪代码</button>
+                <button id="btn-core" onclick="askQuestion('核心代码生成')">核心语句</button>
+                <button id="btn-error" onclick="askQuestion('错误诊断')">错误代码分析</button>
+            </div>
+            <div class="button-group">
+                <button class="chat-btn" onclick="askQuestion('深入追问')" class="chat-btn">💬 追问</button>
+            </div>
+
+            <div class="stage-label">
+                <span id="current-stage">输出结果</span>
+                <span id="loading-indicator" class="loading" style="display: none;"></span>
+            </div>
+            <div id="output" class="output-area markdown-body"></div>
+        </div>
+
+        <!-- 智能出题页面 -->
+        <div id="generator-page" class="page">
+            <div class="form-group">
+                <div class="form-row">
+                    <div class="form-col">
+                        <label class="form-label">题目类型：</label>
+                        <select id="question-type">
+                            <option value="fill_in_the_blank">代码填空</option>
+                            <option value="bug_finding">代码找错</option>
+                            <option value="performance_analysis">性能分析</option>
+                            <option value="solution_design">方案设计</option>
+                        </select>
+                    </div>
+                    <div class="form-col">
+                        <label class="form-label">难度等级：</label>
+                        <select id="difficulty">
+                            <option value="Easy">简单</option>
+                            <option value="Medium">中等</option>
+                            <option value="Hard">困难</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">知识点选择（单选）：</label>
+                <div class="checkbox-group">
+                    <!-- 这里我们改为单选，因为后端接口是一次生成一个标签的题目 -->
+                    <div class="checkbox-item">
+                        <input type="radio" name="knowledge-tag" id="array" value="Array" checked>
+                        <label for="array">数组</label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="radio" name="knowledge-tag" id="linkedlist" value="Linked List">
+                        <label for="linkedlist">链表</label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="radio" name="knowledge-tag" id="string" value="String">
+                        <label for="string">字符串</label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="radio" name="knowledge-tag" id="dp" value="Dynamic Programming">
+                        <label for="dp">动态规划</label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="radio" name="knowledge-tag" id="tree" value="Tree">
+                        <label for="tree">树</label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="radio" name="knowledge-tag" id="graph" value="Graph">
+                        <label for="graph">图</label>
+                    </div>
+                     <div class="checkbox-item">
+                        <input type="radio" name="knowledge-tag" id="hash-table" value="Hash Table">
+                        <label for="hash-table">哈希表</label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="radio" name="knowledge-tag" id="sorting" value="Sorting">
+                        <label for="sorting">排序</label>
+                    </div>
+                     <div class="checkbox-item">
+                        <input type="radio" name="knowledge-tag" id="binary-search" value="Binary Search">
+                        <label for="binary-search">二分查找</label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="radio" name="knowledge-tag" id="greedy" value="Greedy">
+                        <label for="greedy">贪心</label>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 模型选择区域 -->
+            <div class="language-selection">
+                <div class="stage-label">模型选择：</div>
+                <div class="language-buttons">
+                    <button id="btn-gen-model-480b" class="language-btn active" onclick="selectGeneratorModel('coder480b')">模型一：coder-普通版</button>
+                    <button id="btn-gen-model-loopcoder" class="language-btn" onclick="selectGeneratorModel('loopcoder')">模型二：loopcoder</button>
+                </div>
+            </div>
+
+            <div class="button-group">
+                <button id="generate-btn" onclick="generateQuestions()">生成题目</button>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">
+                    生成的题目
+                    <span id="loading-indicator-generator" class="loading" style="display: none;"></span>
+                </label>
+                <div id="questions-output" class="questions-area markdown-body">
+                    <p style="text-align: center; color: #666; margin-top: 100px;">点击"生成题目"按钮开始出题</p>
+                </div>
+                
+                 <!-- 答案区域，初始隐藏 -->
+                <div id="answer-section" style="display: none; margin-top: 20px;">
+                    <button class="action-btn" onclick="toggleAnswer()">显示/隐藏答案</button>
+                    <div id="answer-output" class="questions-area markdown-body" style="display: none; margin-top: 10px; border-top: 1px dashed #ccc; padding-top: 10px;">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 测试点生成页面 -->
+        <div id="testcase-page" class="page">
+            <div class="form-group">
+                <label class="form-label">问题描述：</label>
+                <textarea id="problem-description" placeholder="请输入问题描述（例如：输入一个整数n，输出斐波那契数列的第n项），用于智能生成测试点...">题目描述: 给定两个整数 a 和 b,计算它们的和。
+输入格式: 一行两个整数 a b
+输出格式: 输出 a+b 的值
+数据范围: -1000 <= a, b <= 1000
+样例输入: 1 2
+样例输出: 3</textarea>
+            </div>
+            
+            <div class="form-group">
+                <div class="form-row">
+                    <div class="form-col" style="flex: 0 0 200px;">
+                        <label class="form-label">生成数量：</label>
+                        <select id="testcase-count">
+                            <option value="3">3个</option>
+                            <option value="5" selected>5个</option>
+                            <option value="10">10个</option>
+                            <option value="20">20个</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <!-- <div class="form-group">
+                <label class="form-label">参考代码（C语言）：</label>
+                <textarea id="code-input" placeholder="请粘贴参考的C语言代码..."></textarea>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">测试输入（可选）：</label>
+                <textarea id="test-input" placeholder="请输入测试数据，如果程序需要多行输入，请按实际格式输入..."></textarea>
+            </div> -->
+
+            <div class="button-group">
+                <!-- <button id="generate-testcase-btn" class="generate-btn" onclick="generateTestcases()">运行代码生成测试点</button> -->
+                <button id="generate-problem-testcase-btn" class="generate-btn" onclick="generateProblemTestcases()" style="background-color: #28a745;">智能生成测试点</button>
+            </div>
+
+            <!-- 导出按钮 -->
+            <button id="export-testcase-btn" class="export-btn" onclick="exportTestcases()"
+                style="display: none;">导出测试点</button>
+
+            <div class="form-group">
+                <label class="form-label">
+                    测试点结果
+                    <span id="loading-indicator-testcase" class="loading" style="display: none;"></span>
+                </label>
+                <div id="testcase-output" class="questions-area markdown-body">
+                    <p style="text-align: center; color: #666; margin-top: 100px;">输入问题描述，点击"智能生成测试点"按钮</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- 知识点检测页面 -->
+        <div id="teaching-page" class="page">
+            <!-- Tab 切换 -->
+            <div class="teaching-tabs">
+                <button class="tab-btn active" data-tab="knowledge" onclick="switchTeachingTab('knowledge')">📖 知识点学习</button>
+                <button class="tab-btn" data-tab="error_analysis" onclick="switchTeachingTab('error_analysis')">🐛 错误代码分析</button>
+            </div>
+
+            <!-- 知识点学习 Tab -->
+            <div id="knowledge-tab" class="tab-content active">
+                <!-- 知识点选择卡片 -->
+                <div class="selection-card" id="knowledge-selection">
+                    <h3>📚 选择学习知识点</h3>
+
+                    <div class="difficulty-selection">
+                        <label class="difficulty-label">难度等级：</label>
+                        <label class="radio-label">
+                            <input type="radio" name="teaching-difficulty" value="easy">
+                            <span>🟢 简单</span>
+                        </label>
+                        <label class="radio-label">
+                            <input type="radio" name="teaching-difficulty" value="medium" checked>
+                            <span>🟡 中等</span>
+                        </label>
+                        <label class="radio-label">
+                            <input type="radio" name="teaching-difficulty" value="hard">
+                            <span>🔴 困难</span>
+                        </label>
+                    </div>
+
+                    <div class="topic-selection">
+                        <p class="selection-hint">💡 请选择一个知识点进行学习（单选）：</p>
+                        <div class="topic-grid" id="knowledge-topic-grid">
+                            <!-- 动态生成知识点选项 -->
+                        </div>
+                    </div>
+
+                    <button id="start-knowledge-btn" class="action-btn" disabled onclick="startKnowledgeLearning()">开始学习</button>
+                </div>
+
+                <!-- 知识点学习主区域：左侧聊天，右侧进度 -->
+                <div class="knowledge-learning-layout" id="knowledge-chat" style="display: none;">
+                    <!-- 左侧：聊天区域 -->
+                    <div class="chat-area-left">
+                        <div class="chat-header">
+                            <h3>💬 学习对话</h3>
+                            <button class="secondary-btn" onclick="resetTeachingSession('core_teaching')">🔄 重新开始</button>
+                        </div>
+
+                        <div class="messages-container" id="knowledge-messages">
+                            <div class="welcome-message">
+                                <p>欢迎来到知识点学习！AI导师会引导你掌握编程知识点。</p>
+                            </div>
+                        </div>
+
+                        <div class="input-area chat-input-area">
+                            <div class="input-wrapper">
+                                <textarea id="knowledge-input" placeholder="回答导师的问题..."></textarea>
+                                <button id="knowledge-send-btn" onclick="sendKnowledgeMessage()">发送</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 右侧：信息面板 -->
+                    <div class="info-panel-right">
+                        <h4>📊 学习进度</h4>
+                        <div id="knowledge-progress"></div>
+
+                        <h4>🎯 能力评估</h4>
+                        <div id="knowledge-scores">
+                            <div class="score-item">
+                                <span>概念理解</span>
+                                <div class="progress-bar">
+                                    <div class="progress-fill" id="concept-score" style="width: 50%"></div>
+                                </div>
+                            </div>
+                            <!-- <div class="score-item">
+                                <span>综合能力</span>
+                                <div class="progress-bar">
+                                    <div class="progress-fill" id="comprehensive-score" style="width: 50%"></div>
+                                </div>
+                            </div> -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 错误代码分析 Tab -->
+            <div id="error_analysis-tab" class="tab-content">
+                <!-- 知识点选择卡片 -->
+                <div class="selection-card" id="error-selection">
+                    <h3>🐛 选择错误代码分析知识点</h3>
+
+                    <div class="difficulty-selection">
+                        <label class="difficulty-label">难度等级：</label>
+                        <label class="radio-label">
+                            <input type="radio" name="error-difficulty" value="easy">
+                            <span>🟢 简单</span>
+                        </label>
+                        <label class="radio-label">
+                            <input type="radio" name="error-difficulty" value="medium" checked>
+                            <span>🟡 中等</span>
+                        </label>
+                        <label class="radio-label">
+                            <input type="radio" name="error-difficulty" value="hard">
+                            <span>🔴 困难</span>
+                        </label>
+                    </div>
+
+                    <div class="topic-selection">
+                        <p class="selection-hint">💡 请选择一个知识点进行错误分析（单选）：</p>
+                        <div class="topic-grid" id="error-topic-grid">
+                            <!-- 动态生成知识点选项 -->
+                        </div>
+                    </div>
+
+                    <button id="start-error-btn" class="action-btn" disabled onclick="startErrorAnalysis()">开始分析</button>
+                </div>
+
+                <!-- 错误代码分析主区域：左侧代码+进度，右侧聊天 -->
+                <div class="error-analysis-layout" id="error-chat" style="display: none;">
+                    <!-- 左侧：代码区域 -->
+                    <div class="code-area">
+                        <div class="area-header">
+                            <h3>📝 错误代码</h3>
+                            <div style="display: flex; gap: 8px;">
+                                <button class="copy-btn" onclick="copyErrorCode()">📋 复制</button>
+                                <button class="secondary-btn" onclick="resetTeachingSession('error_analysis')">🔄 重新开始</button>
+                            </div>
+                        </div>
+
+                        <div class="code-display-container">
+                            <pre><code id="error-code-display" class="language-c"></code></pre>
+                        </div>
+
+                        <!-- 左下角：发现进度
+                        <div class="progress-section">
+                            <div class="progress-header">
+                                <h4>🔍 发现进度</h4>
+                                <button id="next-error-btn" class="small-btn" onclick="nextErrorCode()">⏭️ 下一题</button>
+                            </div>
+                            <div class="progress-info">
+                                <p>已发现错误：<span id="found-bugs">0</span> / <span id="total-bugs">2</span></p>
+                                <div class="progress-bar">
+                                    <div class="progress-fill" id="error-progress-fill" style="width: 0%"></div>
+                                </div>
+                            </div>
+                        </div> -->
+                    </div>
+
+                    <!-- 右侧：聊天区域 -->
+                    <div class="chat-area-right">
+                        <div class="chat-header">
+                            <h3>💬 分析对话</h3>
+                        </div>
+
+                        <div class="messages-container" id="error-messages">
+                            <div class="welcome-message">
+                                <p>欢迎来到错误代码分析！AI导师会引导你发现代码中的错误。</p>
+                            </div>
+                        </div>
+
+                        <div class="input-area chat-input-area">
+                            <div class="input-wrapper">
+                                <textarea id="error-input" placeholder="指出代码中的错误..."></textarea>
+                                <button id="error-send-btn" onclick="sendErrorMessage()">发送</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 引入知识点检测 JavaScript -->
+        <script src="static/teaching.js"></script>
+    </div>
+
+    <!-- 引入JavaScript文件 -->
+    <script src="static/script.js"></script>
+</body>
+
+</html>

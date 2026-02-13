@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>小航辅导模块 - ProgramMate</title>
+    
+    <!-- 引入marked.js和代码高亮 -->
+    <script src="/static/js/marked.min.js"></script>
+    <link rel="stylesheet" href="/static/css/github.min.css">
+    <script src="/static/js/highlight.min.js"></script>
+    
+    <!-- 引入KaTeX -->
+    <link rel="stylesheet" href="/static/css/katex.min.css">
+    <script defer src="/static/js/katex.min.js"></script>
+    <script defer src="/static/js/auto-render.min.js"></script>
+    
+    <!-- 引入样式 -->
+    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="/static/xiaohang.css">
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 小航辅导模块</h1>
+        
+        <!-- 返回主页按钮 -->
+        <div class="back-button">
+            <button onclick="window.location.href='/'">← 返回主页</button>
+        </div>
+        
+        <!-- 阶段1: 知识点选择 -->
+        <div id="stage-selection" class="stage active">
+            <h2>📚 请选择你想提高的内容吧</h2>
+            <p class="hint">最多选择3个知识点</p>
+            
+            <div class="knowledge-grid" id="knowledge-grid">
+                <!-- 知识点按钮将通过JavaScript动态生成 -->
+            </div>
+            
+            <div class="selection-info">
+                <span>已选择: <span id="selected-count">0</span>/3</span>
+                <button id="confirm-btn" class="confirm-btn" onclick="confirmSelection()" disabled>确认选择</button>
+            </div>
+        </div>
+        
+        <!-- 阶段2: 编程练习 -->
+        <div id="stage-practice" class="stage">
+            <div class="practice-header">
+                <h2>💡 编程练习</h2>
+                <div class="difficulty-badge">
+                    <span>当前难度: </span>
+                    <span id="current-difficulty" class="badge">简单</span>
+                </div>
+                <div class="progress-info">
+                    <span>已完成: <span id="completed-count">0</span>/3</span>
+                </div>
+            </div>
+            
+            <!-- 题目显示区域 -->
+            <div class="problem-section">
+                <div class="section-header">
+                    <h3>📝 题目</h3>
+                    <button onclick="generateNewProblem()" class="refresh-btn">🔄 生成新题</button>
+                </div>
+                <div id="problem-display" class="problem-display markdown-body">
+                    <p class="loading">正在生成题目...</p>
+                </div>
+            </div>
+            
+            <!-- 主要内容区域 -->
+            <div class="practice-content">
+                <!-- 左侧: 代码编辑区 -->
+                <div class="code-section">
+                    <div class="section-header">
+                        <h3>💻 代码编辑器</h3>
+                        <button onclick="submitCode()" class="submit-btn">提交代码</button>
+                    </div>
+                    <textarea id="code-editor" class="code-editor" placeholder="在这里编写你的C语言代码..."></textarea>
+                    
+                    <!-- 代码评判结果 -->
+                    <div id="judgment-result" class="judgment-result" style="display: none;">
+                        <h4>📊 评判结果</h4>
+                        <div id="judgment-content" class="markdown-body"></div>
+                    </div>
+                </div>
+                
+                <!-- 右侧: 辅导按钮区 -->
+                <div class="guidance-section">
+                    <h3>🎯 智能辅导</h3>
+                    <div class="guidance-buttons">
+                        <button class="guidance-btn" onclick="getGuidance('思路')" data-type="思路">
+                            <span class="btn-icon">💭</span>
+                            <span class="btn-text">5步启发式</span>
+                            <span class="btn-desc">简洁思路引导</span>
+                        </button>
+                        
+                        <button class="guidance-btn" onclick="getGuidance('框架')" data-type="框架">
+                            <span class="btn-icon">🏗️</span>
+                            <span class="btn-text">智能审题</span>
+                            <span class="btn-desc">核心函数框架</span>
+                        </button>
+                        
+                        <button class="guidance-btn" onclick="getGuidance('伪代码')" data-type="伪代码">
+                            <span class="btn-icon">📋</span>
+                            <span class="btn-text">代码分析</span>
+                            <span class="btn-desc">伪代码补充</span>
+                        </button>
+                        
+                        <button class="guidance-btn" onclick="getGuidance('核心语句')" data-type="核心语句">
+                            <span class="btn-icon">🔑</span>
+                            <span class="btn-text">关键点拨</span>
+                            <span class="btn-desc">核心代码框架</span>
+                        </button>
+                        
+                        <button class="guidance-btn complete-btn" onclick="getGuidance('完整代码')" data-type="完整代码">
+                            <span class="btn-icon">✅</span>
+                            <span class="btn-text">正确代码</span>
+                            <span class="btn-desc">查看完整实现</span>
+                        </button>
+                    </div>
+                    
+                    <!-- 辅导内容显示区 -->
+                    <div id="guidance-display" class="guidance-display" style="display: none;">
+                        <div class="guidance-header">
+                            <h4 id="guidance-title">辅导内容</h4>
+                            <button onclick="closeGuidance()" class="close-btn">✕</button>
+                        </div>
+                        <div id="guidance-content" class="markdown-body"></div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 重新开始按钮 -->
+            <div class="restart-section">
+                <button onclick="restartSession()" class="restart-btn">🔄 重新选择知识点</button>
+            </div>
+        </div>
+    </div>
+    
+    <script src="/static/xiaohang.js"></script>
+</body>
+</html>

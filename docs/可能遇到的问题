@@ -1,0 +1,18 @@
+Docker + Flask 项目更新不生效
+代码调用链断裂
+排查路径
+确认 Docker 容器正在运行 → docker-compose ps
+确认容器中的文件已更新 → docker exec <container> cat /app/xxx
+确认用户访问的是哪个页面 → 用户访问的是 xiaohang_v3.html，不是 index.html
+追踪前端调用的 API → getGuidance() 调用 /api/xiaohang/get_guidance
+找到后端 API 实现 → app_xiaohang_enhanced.py 中的 get_guidance 函数
+发现问题：该函数没有使用 config.py 中的提示词，而是自己定义了旧的提示词
+
+下次遇到类似问题的快速检查清单
+
+1. 确认访问的页面路径（index.html vs xiaohang_v3.html 等）
+2. 追踪前端 JS 调用的 API 端点
+3. 找到后端 API 的实现文件
+4. 检查 API 函数是否真正使用了你修改的配置/提示词
+5. 如果是硬编码，修改为调用统一配置
+6. 重启容器：docker-compose restart flask-app

@@ -1,0 +1,909 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>代码框架 - Code Framework Studio</title>
+    
+    <!-- 依赖 -->
+    <script src="/static/js/marked.min.js"></script>
+    <link rel="stylesheet" href="/static/css/github.min.css">
+    <script src="/static/js/highlight.min.js"></script>
+    <script src="/static/js/mermaid.min.js"></script>
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        :root {
+            /* HSL 层级颜色系统 - 科技蓝基调 */
+            --base-hue: 217;
+            --base-saturation: 91%;
+            
+            /* 层级亮度递增 */
+            --layer-0-l: 40%;   /* #2563EB 深蓝 */
+            --layer-1-l: 50%;   /* #3B82F6 */
+            --layer-2-l: 60%;   /* #60A5FA */
+            --layer-3-l: 70%;   /* #93C5FD */
+            --layer-4-l: 80%;   /* #BFDBFE */
+            --layer-5-l: 88%;   /* #DBEAFE */
+            
+            /* 控制结构颜色 */
+            --sequence-color: #3498db;
+            --sequence-bg: rgba(52, 152, 219, 0.1);
+            --selection-color: #e74c3c;
+            --selection-bg: rgba(231, 76, 60, 0.1);
+            --loop-color: #27ae60;
+            --loop-bg: rgba(39, 174, 96, 0.1);
+            
+            /* 基础颜色 */
+            --bg-canvas: #f1f5f9;
+            --bg-card: #ffffff;
+            --text-primary: #1e293b;
+            --text-secondary: #64748b;
+            --text-muted: #94a3b8;
+            --border-color: #e2e8f0;
+            --success-color: #22c55e;
+            --warning-color: #f59e0b;
+            
+            /* 逻辑贯通线 */
+            --thread-line-color: #cbd5e1;
+            --thread-line-active: #3b82f6;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            background: var(--bg-canvas);
+            color: var(--text-primary);
+            line-height: 1.6;
+            min-height: 100vh;
+        }
+        
+        /* ==================== 顶部导航栏 ==================== */
+        .top-nav {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 56px;
+            background: linear-gradient(135deg, hsl(var(--base-hue), var(--base-saturation), 35%) 0%, hsl(var(--base-hue), var(--base-saturation), 45%) 100%);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 24px;
+            z-index: 1000;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+        }
+        
+        .nav-left {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        
+        .nav-logo {
+            font-size: 20px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .nav-logo-icon {
+            font-size: 24px;
+        }
+        
+        .nav-divider {
+            width: 1px;
+            height: 24px;
+            background: rgba(255,255,255,0.3);
+        }
+        
+        .problem-info {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        
+        .problem-title {
+            font-size: 14px;
+            font-weight: 500;
+            max-width: 300px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            opacity: 0.9;
+        }
+        
+        .progress-pill {
+            background: rgba(255,255,255,0.2);
+            padding: 4px 12px;
+            border-radius: 16px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        
+        .progress-pill .done {
+            color: #86efac;
+        }
+        
+        .nav-center {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .layer-indicator {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            background: rgba(255,255,255,0.15);
+            padding: 6px 12px;
+            border-radius: 8px;
+            font-size: 13px;
+        }
+        
+        .layer-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            border: 2px solid white;
+        }
+        
+        .nav-right {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .nav-btn {
+            padding: 8px 14px;
+            background: rgba(255,255,255,0.15);
+            border: 1px solid rgba(255,255,255,0.25);
+            color: white;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .nav-btn:hover {
+            background: rgba(255,255,255,0.25);
+            transform: translateY(-1px);
+        }
+        
+        .nav-btn.primary {
+            background: white;
+            color: hsl(var(--base-hue), var(--base-saturation), 40%);
+            border-color: white;
+        }
+        
+        .nav-btn.primary:hover {
+            background: #f8fafc;
+        }
+</style>
+</head>
+<body>
+    <!-- 顶部导航 -->
+    <nav class="top-nav">
+        <div class="nav-left">
+            <div class="nav-logo">
+                <span class="nav-logo-icon">🏗️</span>
+                <span>代码框架</span>
+            </div>
+            <div class="nav-divider"></div>
+            <div class="problem-info">
+                <span class="problem-title" id="problem-title">加载题目中...</span>
+                <span class="progress-pill">
+                    <span class="done" id="done-count">0</span>/<span id="total-count">0</span> 模块
+                </span>
+            </div>
+        </div>
+        
+        <div class="nav-center">
+            <div class="layer-indicator">
+                <span>当前深度:</span>
+                <span id="current-depth">L0</span>
+            </div>
+        </div>
+        
+        <div class="nav-right">
+            <button class="nav-btn" onclick="collapseAll()">
+                📁 全部折叠
+            </button>
+            <button class="nav-btn" onclick="expandAll()">
+                📂 全部展开
+            </button>
+            <button class="nav-btn" onclick="resetDecomposition()">
+                🔄 重新分解
+            </button>
+            <button class="nav-btn primary" onclick="exportCode()">
+                📤 导出代码
+            </button>
+        </div>
+    </nav>
+</body>
+</html>
+
+    <!-- 继续添加 CSS 样式 -->
+    <style>
+        /* ==================== 主容器 - 居中流式布局 ==================== */
+        .main-container {
+            margin-top: 56px;
+            min-height: calc(100vh - 56px);
+            display: flex;
+            justify-content: center;
+            padding: 32px 24px;
+            background: var(--bg-canvas);
+        }
+        
+        .fold-stream {
+            width: 100%;
+            max-width: 900px;
+            display: flex;
+            flex-direction: column;
+            gap: 0;
+            position: relative;
+            padding-left: 20px;
+        }
+        
+        /* ==================== 逻辑贯通线 (Thread Line) ==================== */
+        .thread-line {
+            position: absolute;
+            left: 6px;
+            top: 20px;
+            bottom: 20px;
+            width: 3px;
+            background: linear-gradient(to bottom, var(--thread-line-active), var(--thread-line-color));
+            border-radius: 2px;
+            z-index: 1;
+        }
+        
+        .thread-line::before {
+            content: '';
+            position: absolute;
+            top: -6px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 12px;
+            height: 12px;
+            background: var(--thread-line-active);
+            border-radius: 50%;
+            border: 3px solid white;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+        }
+        
+        /* ==================== 智能拆解卡片 (Smart Decomposition Card) ==================== */
+        .logic-card {
+            position: relative;
+            margin-left: 20px;
+            margin-bottom: 16px;
+            background: var(--bg-card);
+            border-radius: 16px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+            overflow: hidden;
+            transition: all 0.3s ease;
+            border: 1px solid var(--border-color);
+        }
+        
+        .logic-card:hover {
+            box-shadow: 0 4px 16px rgba(0,0,0,0.1), 0 2px 4px rgba(0,0,0,0.06);
+        }
+        
+        /* 卡片与贯通线的连接点 */
+        .logic-card::before {
+            content: '';
+            position: absolute;
+            left: -20px;
+            top: 28px;
+            width: 14px;
+            height: 3px;
+            background: var(--thread-line-color);
+        }
+        
+        .logic-card::after {
+            content: '';
+            position: absolute;
+            left: -26px;
+            top: 22px;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: white;
+            border: 3px solid var(--thread-line-color);
+            transition: all 0.3s;
+        }
+        
+        /* 层级颜色变化 */
+        .logic-card[data-layer="0"]::after { border-color: hsl(var(--base-hue), var(--base-saturation), var(--layer-0-l)); }
+        .logic-card[data-layer="1"]::after { border-color: hsl(var(--base-hue), var(--base-saturation), var(--layer-1-l)); }
+        .logic-card[data-layer="2"]::after { border-color: hsl(var(--base-hue), var(--base-saturation), var(--layer-2-l)); }
+        .logic-card[data-layer="3"]::after { border-color: hsl(var(--base-hue), var(--base-saturation), var(--layer-3-l)); }
+        .logic-card[data-layer="4"]::after { border-color: hsl(var(--base-hue), var(--base-saturation), var(--layer-4-l)); }
+        .logic-card[data-layer="5"]::after { border-color: hsl(var(--base-hue), var(--base-saturation), var(--layer-5-l)); }
+        
+        /* 已完成状态 */
+        .logic-card.completed::after {
+            background: var(--success-color);
+            border-color: var(--success-color);
+        }
+        
+        .logic-card.completed {
+            opacity: 0.85;
+        }
+        
+        /* ==================== 区域①：状态栏（可折叠头部） ==================== */
+        .card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 18px;
+            cursor: pointer;
+            transition: background 0.2s;
+            user-select: none;
+        }
+        
+        .card-header:hover {
+            background: rgba(0,0,0,0.02);
+        }
+        
+        /* 层级背景色 */
+        .logic-card[data-layer="0"] .card-header { background: hsl(var(--base-hue), var(--base-saturation), var(--layer-0-l)); color: white; }
+        .logic-card[data-layer="1"] .card-header { background: hsl(var(--base-hue), var(--base-saturation), var(--layer-1-l)); color: white; }
+        .logic-card[data-layer="2"] .card-header { background: hsl(var(--base-hue), var(--base-saturation), var(--layer-2-l)); color: white; }
+        .logic-card[data-layer="3"] .card-header { background: hsl(var(--base-hue), var(--base-saturation), var(--layer-3-l)); color: #1e293b; }
+        .logic-card[data-layer="4"] .card-header { background: hsl(var(--base-hue), var(--base-saturation), var(--layer-4-l)); color: #1e293b; }
+        .logic-card[data-layer="5"] .card-header { background: hsl(var(--base-hue), var(--base-saturation), var(--layer-5-l)); color: #1e293b; }
+        
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        
+        .layer-tag {
+            font-size: 11px;
+            font-weight: 700;
+            padding: 3px 8px;
+            border-radius: 6px;
+            background: rgba(255,255,255,0.25);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .logic-card[data-layer="3"] .layer-tag,
+        .logic-card[data-layer="4"] .layer-tag,
+        .logic-card[data-layer="5"] .layer-tag {
+            background: rgba(0,0,0,0.1);
+        }
+        
+        .module-name {
+            font-size: 15px;
+            font-weight: 600;
+        }
+        
+        .control-type-badge {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 12px;
+            padding: 3px 10px;
+            border-radius: 12px;
+            background: rgba(255,255,255,0.2);
+        }
+        
+        .logic-card[data-layer="3"] .control-type-badge,
+        .logic-card[data-layer="4"] .control-type-badge,
+        .logic-card[data-layer="5"] .control-type-badge {
+            background: rgba(0,0,0,0.08);
+        }
+        
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .status-badge {
+            font-size: 12px;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-weight: 500;
+        }
+        
+        .status-badge.pending {
+            background: rgba(255,255,255,0.2);
+        }
+        
+        .status-badge.completed {
+            background: var(--success-color);
+            color: white;
+        }
+        
+        .toggle-icon {
+            font-size: 18px;
+            transition: transform 0.3s ease;
+        }
+        
+        .logic-card.collapsed .toggle-icon {
+            transform: rotate(-90deg);
+        }
+        
+        /* ==================== 区域②：可视化逻辑区（Mermaid） ==================== */
+        .card-body {
+            padding: 20px;
+            border-top: 1px solid var(--border-color);
+            display: block;
+        }
+        
+        .logic-card.collapsed .card-body {
+            display: none;
+        }
+        
+        .mermaid-container {
+            background: #f8fafc;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 16px;
+            min-height: 120px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow-x: auto;
+        }
+        
+        .mermaid-container svg {
+            max-width: 100%;
+        }
+        
+        .mermaid-loading {
+            color: var(--text-muted);
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .mermaid-loading::before {
+            content: '';
+            width: 18px;
+            height: 18px;
+            border: 2px solid var(--border-color);
+            border-top-color: var(--thread-line-active);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        /* IPO 信息展示 */
+        .ipo-section {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+        
+        .ipo-box {
+            padding: 12px;
+            border-radius: 10px;
+            font-size: 13px;
+        }
+        
+        .ipo-box.input {
+            background: var(--sequence-bg);
+            border-left: 3px solid var(--sequence-color);
+        }
+        
+        .ipo-box.process {
+            background: var(--warning-color);
+            background: rgba(245, 158, 11, 0.1);
+            border-left: 3px solid var(--warning-color);
+        }
+        
+        .ipo-box.output {
+            background: var(--loop-bg);
+            border-left: 3px solid var(--loop-color);
+        }
+        
+        .ipo-label {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 4px;
+            opacity: 0.7;
+        }
+        
+        .ipo-content {
+            color: var(--text-primary);
+        }
+    </style>
+
+    <!-- 继续添加 CSS 样式 - 区域③和动画 -->
+    <style>
+        /* ==================== 区域③：交互决策区（The Confidence Gate） ==================== */
+        .confidence-gate {
+            background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+            border: 1px dashed var(--border-color);
+        }
+        
+        .gate-question {
+            font-size: 15px;
+            color: var(--text-primary);
+            margin-bottom: 16px;
+            font-weight: 500;
+        }
+        
+        .gate-question em {
+            color: hsl(var(--base-hue), var(--base-saturation), 45%);
+            font-style: normal;
+            font-weight: 600;
+        }
+        
+        .gate-buttons {
+            display: flex;
+            justify-content: center;
+            gap: 16px;
+        }
+        
+        .gate-btn {
+            padding: 12px 28px;
+            border-radius: 10px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            border: 2px solid transparent;
+        }
+        
+        .gate-btn.can-write {
+            background: var(--success-color);
+            color: white;
+            border-color: var(--success-color);
+        }
+        
+        .gate-btn.can-write:hover {
+            background: #16a34a;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(34, 197, 94, 0.35);
+        }
+        
+        .gate-btn.cannot-write {
+            background: white;
+            color: var(--warning-color);
+            border-color: var(--warning-color);
+        }
+        
+        .gate-btn.cannot-write:hover {
+            background: var(--warning-color);
+            color: white;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(245, 158, 11, 0.35);
+        }
+        
+        /* ==================== 子卡片容器（递归展开） ==================== */
+        .sub-cards-container {
+            margin-top: 16px;
+            padding-left: 0;
+            position: relative;
+        }
+        
+        .sub-cards-container::before {
+            content: '';
+            position: absolute;
+            left: -24px;
+            top: 0;
+            bottom: 0;
+            width: 3px;
+            background: linear-gradient(to bottom, var(--thread-line-active), var(--thread-line-color));
+            border-radius: 2px;
+        }
+        
+        /* 子卡片滑入动画 */
+        .logic-card.slide-in {
+            animation: slideIn 0.4s ease-out forwards;
+        }
+        
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        /* ==================== 已完成状态的卡片 ==================== */
+        .logic-card.completed .card-header {
+            background: var(--success-color) !important;
+            color: white !important;
+        }
+        
+        .logic-card.completed .card-body {
+            display: none;
+        }
+        
+        .completed-summary {
+            padding: 12px 18px;
+            background: rgba(34, 197, 94, 0.08);
+            border-top: 1px solid rgba(34, 197, 94, 0.2);
+            font-size: 13px;
+            color: var(--success-color);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .logic-card:not(.completed) .completed-summary {
+            display: none;
+        }
+        
+        /* ==================== 代码输入区（完成后显示） ==================== */
+        .code-input-area {
+            margin-top: 16px;
+            display: none;
+        }
+        
+        .logic-card.show-code .code-input-area {
+            display: block;
+        }
+        
+        .code-textarea {
+            width: 100%;
+            min-height: 120px;
+            padding: 14px;
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 13px;
+            line-height: 1.5;
+            resize: vertical;
+            background: #1e293b;
+            color: #e2e8f0;
+        }
+        
+        .code-textarea:focus {
+            outline: none;
+            border-color: var(--thread-line-active);
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+        }
+        
+        .code-textarea::placeholder {
+            color: #64748b;
+        }
+        
+        .code-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        
+        .code-action-btn {
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 1px solid var(--border-color);
+            background: white;
+            color: var(--text-primary);
+        }
+        
+        .code-action-btn:hover {
+            background: var(--bg-canvas);
+        }
+        
+        .code-action-btn.confirm {
+            background: var(--success-color);
+            color: white;
+            border-color: var(--success-color);
+        }
+        
+        .code-action-btn.confirm:hover {
+            background: #16a34a;
+        }
+        
+        /* ==================== 加载状态 ==================== */
+        .decomposing-indicator {
+            display: none;
+            padding: 20px;
+            text-align: center;
+            color: var(--text-secondary);
+        }
+        
+        .decomposing-indicator.active {
+            display: block;
+        }
+        
+        .decomposing-spinner {
+            width: 32px;
+            height: 32px;
+            border: 3px solid var(--border-color);
+            border-top-color: var(--thread-line-active);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin: 0 auto 12px;
+        }
+        
+        /* ==================== 空状态 ==================== */
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--text-secondary);
+        }
+        
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+        }
+        
+        .empty-state-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 8px;
+        }
+        
+        .empty-state-desc {
+            font-size: 14px;
+            margin-bottom: 20px;
+        }
+        
+        .start-btn {
+            padding: 12px 28px;
+            background: linear-gradient(135deg, hsl(var(--base-hue), var(--base-saturation), 45%) 0%, hsl(var(--base-hue), var(--base-saturation), 55%) 100%);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .start-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(59, 130, 246, 0.35);
+        }
+        
+        /* ==================== 响应式 ==================== */
+        @media (max-width: 768px) {
+            .main-container {
+                padding: 20px 12px;
+            }
+            
+            .fold-stream {
+                max-width: 100%;
+                padding-left: 16px;
+            }
+            
+            .logic-card {
+                margin-left: 16px;
+            }
+            
+            .thread-line {
+                left: 4px;
+            }
+            
+            .logic-card::before {
+                left: -16px;
+                width: 10px;
+            }
+            
+            .logic-card::after {
+                left: -20px;
+                width: 10px;
+                height: 10px;
+            }
+            
+            .ipo-section {
+                grid-template-columns: 1fr;
+            }
+            
+            .gate-buttons {
+                flex-direction: column;
+            }
+            
+            .gate-btn {
+                width: 100%;
+                justify-content: center;
+            }
+            
+            .nav-center {
+                display: none;
+            }
+            
+            .problem-title {
+                max-width: 150px;
+            }
+        }
+    </style>
+
+    <!-- 主体内容区域 -->
+    <main class="main-container">
+        <div class="fold-stream" id="fold-stream">
+            <!-- 逻辑贯通线 -->
+            <div class="thread-line"></div>
+            
+            <!-- 空状态 -->
+            <div class="empty-state" id="empty-state">
+                <div class="empty-state-icon">🏗️</div>
+                <div class="empty-state-title">开始构建代码框架</div>
+                <div class="empty-state-desc">点击下方按钮，系统将帮助你逐层拆解问题结构</div>
+                <button class="start-btn" onclick="startDecomposition()">
+                    🚀 开始分解
+                </button>
+            </div>
+            
+            <!-- 卡片流容器 -->
+            <div id="cards-container"></div>
+            
+            <!-- 分解中指示器 -->
+            <div class="decomposing-indicator" id="decomposing-indicator">
+                <div class="decomposing-spinner"></div>
+                <div>正在分析问题结构...</div>
+            </div>
+        </div>
+    </main>
+
+    <!-- 引入 JS -->
+    <script src="/static/framework_studio.js"></script>
+    
+    <!-- 内联初始化脚本 -->
+    <script>
+        // Mermaid 初始化
+        document.addEventListener('DOMContentLoaded', function() {
+            if (typeof mermaid !== 'undefined') {
+                mermaid.initialize({
+                    startOnLoad: false,
+                    theme: 'base',
+                    themeVariables: {
+                        primaryColor: '#e0f2fe',
+                        primaryTextColor: '#1e40af',
+                        primaryBorderColor: '#3b82f6',
+                        lineColor: '#64748b',
+                        secondaryColor: '#fef3c7',
+                        tertiaryColor: '#dcfce7',
+                        fontSize: '14px'
+                    },
+                    flowchart: {
+                        useMaxWidth: true,
+                        htmlLabels: true,
+                        curve: 'basis',
+                        padding: 15,
+                        nodeSpacing: 50,
+                        rankSpacing: 50
+                    },
+                    securityLevel: 'loose'
+                });
+            }
+            
+            // 初始化框架工作室
+            if (typeof FrameworkStudio !== 'undefined') {
+                FrameworkStudio.init();
+            }
+        });
+    </script>
+</body>
+</html>

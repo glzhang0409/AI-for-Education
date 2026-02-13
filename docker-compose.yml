@@ -1,0 +1,118 @@
+version: '3.8'
+
+services:
+  # Flask 应用服务
+  flask-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: flask-ai-assistant
+    ports:
+      - "5011:5011"
+    environment:
+      - FLASK_ENV=production
+      - FLASK_DEBUG=false
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - XIAOHANG_API_URL=${XIAOHANG_API_URL}
+      - XIAOHANG_API_KEY=${XIAOHANG_API_KEY}
+      - OLLAMA_API_URL=${OLLAMA_API_URL}
+      - OLLAMA_BEARER_TOKEN=${OLLAMA_BEARER_TOKEN}
+      - JDOODLE_CLIENT_ID=${JDOODLE_CLIENT_ID}
+      - JDOODLE_CLIENT_SECRET=${JDOODLE_CLIENT_SECRET}
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=root
+      - MYSQL_PASSWORD=${MYSQL_ROOT_PASSWORD:-hangfudao123}
+      - MYSQL_DATABASE=hangfudao
+    volumes:
+      - ./static:/app/static:ro
+      - ./app.py:/app/app.py:ro
+      - ./config.py:/app/config.py:ro
+      - ./config_programming_assistant.py:/app/config_programming_assistant.py:ro
+      - ./app_xiaohang.py:/app/app_xiaohang.py:ro
+      - ./app_xiaohang_enhanced.py:/app/app_xiaohang_enhanced.py:ro
+      - ./models.py:/app/models.py:ro
+    depends_on:
+      - redis
+      - mysql
+    networks:
+      - ai-assistant-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5011/')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    # 删除或注释掉临时命令
+    # command: tail -f /dev/null  # 临时命令，保持容器运行
+
+  # MySQL 数据库服务
+  mysql:
+    image: hub.rat.dev/mysql:8.0
+    container_name: mysql-ai-assistant
+    ports:
+      - "3307:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-hangfudao123}
+      MYSQL_DATABASE: hangfudao
+      MYSQL_CHARACTER_SET_SERVER: utf8mb4
+      MYSQL_COLLATION_SERVER: utf8mb4_unicode_ci
+    volumes:
+      - ./docker-data/mysql:/var/lib/mysql
+    networks:
+      - ai-assistant-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --lower_case_table_names=1
+
+  # Redis 数据库服务
+  redis:
+    image: hub.rat.dev/redis:7-alpine
+    container_name: redis-ai-assistant
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./docker-data/redis:/data  # 数据存储在项目目录的 docker-data/redis 文件夹（D盘）
+      - ./redis.conf:/usr/local/etc/redis/redis.conf:ro
+    command: redis-server /usr/local/etc/redis/redis.conf
+    networks:
+      - ai-assistant-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Nginx 反向代理（可选）
+  nginx:
+    image: hub.rat.dev/nginx:alpine
+    container_name: nginx-ai-assistant
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - flask-app
+    networks:
+      - ai-assistant-network
+    restart: unless-stopped
+    profiles:
+      - production
+
+# volumes 配置已移除，改用本地路径挂载
+# 所有数据将存储在项目目录的 docker-data 文件夹中（位于 D 盘）
+
+networks:
+  ai-assistant-network:
+    driver: bridge
