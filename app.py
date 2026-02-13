@@ -116,16 +116,6 @@ MODEL_ENDPOINTS = {
         "url": "https://console.siflow.cn/siflow/longmen/skyinfer/fjing/qwen-lcb/v1/8020/v1/chat/completions",
         "model": "model-lcb",
     },
-    "coder32b": {
-        "name": "模型二（指令 32B）",
-        "url": "https://console.siflow.cn/siflow/auriga/skyinfer/wzhang/qwen25-coder-ins/0/30000/v1/chat/completions",
-        "model": "Qwen2.5-Coder-Instruct-32B-Arena",
-    },
-    "coder480b": {
-        "name": "模型三（480B MoE 指令）",
-        "url": "https://console.siflow.cn/siflow/auriga/skyinfer/fjing/qwen3-480b-0/v1/chat/completions",
-        "model": "Qwen3-Coder-480B-A35B-Instruct",
-    },
     "coder1t": {
         "name": "模型四（1T）",
         "url": "https://console.siflow.cn/siflow/longmen/skyinfer/wzhang/litellm-dpsk/v1/4000/v1/chat/completions",
@@ -133,8 +123,8 @@ MODEL_ENDPOINTS = {
     },
     "loopcoder": {
         "name": "模型五",
-        "url": "https://console.siflow.cn/siflow/longmen/skyinfer/wzhang/loopcoder/v1/8020/v1/chat/completions",
-        "model": "loopcoder",
+        "url": "https://siflow-auriga.siflow.cn/siflow/auriga/skyinfer/lzchai/iquest-loop/v1/8000/v1/chat/completions",
+        "model": "IQuest-Coder-V1-40B-Loop-Instruct",
     },
 }
 

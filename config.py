@@ -207,11 +207,13 @@ class LoopCoderLLM(LLM):
         try:
             client = OpenAI(
                 api_key="EMPTY",
-                base_url="https://console.siflow.cn/siflow/longmen/skyinfer/wzhang/loopcoder/v1/8000/v1"
+                base_url="https://siflow-auriga.siflow.cn/siflow/auriga/skyinfer/lzchai/iquest-loop/v1/8000/v1"
             )
             response = client.chat.completions.create(
-                model="loopcoder",
+                model="IQuest-Coder-V1-40B-Loop-Instruct",
                 messages=[{"role": "user", "content": prompt}],
+                temperature=0.6,
+                top_p=0.95,
                 stream=True,
                 timeout=120
             )
@@ -230,17 +232,19 @@ class LoopCoderLLM(LLM):
         return "loopcoder"
 
 
-class Coder32bLLM(LLM):
+class NormalLLM(LLM):
     def _call(self, prompt: str, stop: Optional[List[str]] = None, **kwargs: Any) -> str:
-        """调用 Qwen2.5-Coder-Instruct-32B API - 生成器版本用于流式输出"""
+        """调用 普通模型 API - 生成器版本用于流式输出"""
         try:
             client = OpenAI(
                 api_key="EMPTY",
-                base_url="https://console.siflow.cn/siflow/auriga/skyinfer/wzhang/qwen25-coder-ins/0/30000/v1"
+                base_url="https://siflow-auriga.siflow.cn/siflow/auriga/skyinfer/lzchai/iquest-no-loop/v1/8000/v1"
             )
             response = client.chat.completions.create(
-                model="Qwen2.5-Coder-Instruct-32B-Arena",
+                model="IQuest-Coder-V1-40B-Instruct",
                 messages=[{"role": "user", "content": prompt}],
+                temperature=0.6,
+                top_p=0.95,
                 stream=True,
                 timeout=120
             )
@@ -250,52 +254,21 @@ class Coder32bLLM(LLM):
                     has_content = True
                     yield chunk.choices[0].delta.content
             if not has_content:
-                yield "\n\n⚠️ 未收到Qwen2.5-Coder-32B API响应，请重试。"
+                yield "\n\n⚠️ 未收到普通模型API响应，请重试。"
         except Exception as e:
-            yield f"⚠️ 调用Qwen2.5-Coder-32B API时出错：{str(e)}"
+            yield f"⚠️ 调用普通模型API时出错：{str(e)}"
 
     @property
     def _llm_type(self) -> str:
-        return "coder32b"
-
-
-class Coder480bLLM(LLM):
-    def _call(self, prompt: str, stop: Optional[List[str]] = None, **kwargs: Any) -> str:
-        """调用 Qwen3-Coder-480B-A35B-Instruct API - 生成器版本用于流式输出"""
-        try:
-            client = OpenAI(
-                api_key="EMPTY",
-                base_url="https://console.siflow.cn/siflow/auriga/skyinfer/fjing/qwen3-480b-0/v1"
-            )
-            response = client.chat.completions.create(
-                model="Qwen3-Coder-480B-A35B-Instruct",
-                messages=[{"role": "user", "content": prompt}],
-                stream=True,
-                timeout=120
-            )
-            has_content = False
-            for chunk in response:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    has_content = True
-                    yield chunk.choices[0].delta.content
-            if not has_content:
-                yield "\n\n⚠️ 未收到Qwen3-Coder-480B API响应，请重试。"
-        except Exception as e:
-            yield f"⚠️ 调用Qwen3-Coder-480B API时出错：{str(e)}"
-
-    @property
-    def _llm_type(self) -> str:
-        return "coder480b"
+        return "normal"
 
 
 def get_llm(model_name: str = "xhang") -> LLM:
     """根据模型名称返回对应的LLM实例"""
     if model_name == "loopcoder":
         return LoopCoderLLM()
-    elif model_name == "coder32b":
-        return Coder32bLLM()
-    elif model_name == "coder480b":
-        return Coder480bLLM()
+    elif model_name == "normal":
+        return NormalLLM()
     return XiaohangLLM()
 
 

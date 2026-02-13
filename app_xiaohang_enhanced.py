@@ -1212,7 +1212,7 @@ def change_model():
     data = request.json
     new_model = data.get('model', 'xhang')
     
-    if new_model not in ['xhang', 'loopcoder', 'coder32b', 'coder480b']:
+    if new_model not in ['xhang', 'loopcoder', 'normal']:
         return jsonify({"error": "无效的模型"}), 400
     
     session['xiaohang_model'] = new_model
