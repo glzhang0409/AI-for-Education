@@ -31,30 +31,29 @@ let currentRightGeneratingType = null;
 let isModuleGenerating = false;
 let currentGeneratingModule = null;
 
-// 浮动窗口相关变量
-let floatingPanelVisible = false;
-let floatingPanelMinimized = false;
-let floatingPanelMaximized = false;
-let preMaximizePosition = null; // 保存最大化前的位置和尺寸
-let isDragging = false;
-let isResizing = false;
-let resizeDirection = '';
-let dragOffset = { x: 0, y: 0 };
-let initialSize = { width: 0, height: 0 };
-let initialPos = { x: 0, y: 0, left: 0, top: 0 };
+// 多窗口管理变量
+const MAX_PANELS = 5;
+let floatingPanels = new Map(); // panelId -> { id, icon, title, content, position, isMinimized, isMaximized, preMaximizePosition, zIndex }
+let panelZIndexCounter = 1000; // 用于管理窗口层级
+let activePanelId = null; // 当前激活（最前面）的窗口ID
 
-// 最小化圆球管理
-const MAX_BUBBLES = 5;
-let minimizedPanels = []; // 存储最小化的面板信息 { id, icon, title, content, position, bubblePosition }
-let currentPanelId = null; // 当前显示的面板ID
-let draggingBubble = null; // 当前拖动的圆球
-let bubbleDragOffset = { x: 0, y: 0 };
+// 拖拽和调整大小状态（每个窗口独立）
+let dragState = { isDragging: false, panelId: null, offset: { x: 0, y: 0 } };
+let resizeState = { isResizing: false, panelId: null, direction: '', initialSize: { width: 0, height: 0 }, initialPos: { x: 0, y: 0, left: 0, top: 0 } };
+
+// 兼容旧变量（部分代码可能还在使用）
+let floatingPanelVisible = false;
+let currentPanelId = null;
+let minimizedPanels = [];
 
 // 流式请求管理 - 防止面板内容串台
 let activeAbortControllers = new Map(); // panelId -> AbortController
 let panelContentReady = new Map(); // panelId -> boolean (内容是否已生成完毕)
 let panelStreamBuffers = new Map(); // panelId -> { fullText, type, completed } 每个面板独立的流式缓冲区
 let panelIdByType = new Map(); // type(title) -> panelId 记录每个模块类型对应的面板ID
+
+// 追问悬浮小人对应的模块类型列表（这些模块使用悬浮小人追问，不显示内联追问按钮）
+const AVATAR_FOLLOWUP_MODULES = ['思路', '框架', '伪代码', '核心语句'];
 
 // ==================== 页面初始化 ====================
 
@@ -96,6 +95,23 @@ function initMermaid() {
     }
 }
 
+// Mermaid渲染ID全局计数器，确保ID唯一
+let mermaidRenderCounter = 0;
+
+// 清理 Mermaid 渲染失败后残留在 document body 中的错误 SVG 元素
+// Mermaid v10 在 render() 失败时会将带有 "Syntax error" 的 SVG 直接插入 body
+function cleanupMermaidErrors() {
+    document.querySelectorAll('body > #d2, body > [id^="d"], body > svg[aria-roledescription="error"]').forEach(el => el.remove());
+    // 清理所有 body 直接子级中包含 "Syntax error" 文本的 SVG
+    document.querySelectorAll('body > svg').forEach(svg => {
+        if (svg.textContent && svg.textContent.includes('Syntax error')) {
+            svg.remove();
+        }
+    });
+    // 清理 Mermaid 可能创建的临时容器 div
+    document.querySelectorAll('body > div[id^="dmermaid-"], body > div[id^="dfmermaid-"]').forEach(el => el.remove());
+}
+
 // Mermaid图表渲染函数
 async function renderMermaidDiagrams(container) {
     if (typeof mermaid === 'undefined') {
@@ -129,13 +145,15 @@ async function renderMermaidDiagrams(container) {
         mermaidDiv.className = 'mermaid-responsive-container';
         
         try {
-            const id = `mermaid-${Date.now()}-${i}`;
+            const id = `mermaid-${Date.now()}-${i}-${mermaidRenderCounter++}`;
             const { svg } = await mermaid.render(id, code);
             mermaidDiv.innerHTML = svg;
         } catch (error) {
             console.error('Mermaid 渲染错误:', error);
             mermaidDiv.innerHTML = `<p style="color: #e74c3c; margin-bottom: 10px;">⚠️ 图表渲染失败</p>`;
             mermaidDiv.innerHTML += `<pre style="text-align: left; background: #f5f5f5; padding: 15px; border-radius: 8px; overflow-x: auto;"><code>${code}</code></pre>`;
+        } finally {
+            cleanupMermaidErrors();
         }
         
         visualSection.appendChild(mermaidDiv);
@@ -163,12 +181,14 @@ async function renderMermaidDiagrams(container) {
         mermaidContainer.className = 'mermaid-responsive-container';
         
         try {
-            const id = `mermaid-div-${Date.now()}-${i}`;
+            const id = `mermaid-div-${Date.now()}-${i}-${mermaidRenderCounter++}`;
             const { svg } = await mermaid.render(id, code);
             mermaidContainer.innerHTML = svg;
         } catch (error) {
             console.error('Mermaid 渲染错误:', error);
             mermaidContainer.innerHTML = `<span style="color: #64748b;">📊 图表加载失败</span>`;
+        } finally {
+            cleanupMermaidErrors();
         }
         
         visualSection.appendChild(mermaidContainer);
@@ -180,11 +200,79 @@ async function renderMermaidDiagrams(container) {
 function preprocessMermaidCode(code) {
     let processed = code.trim();
     
+    // 【关键修复】先将单行代码格式化为多行
+    // 检测是否是单行格式（包含多个节点定义但没有换行）
+    // 在箭头 --> 前添加换行，但保留第一行的 flowchart/graph 声明
+    if (processed.split('\n').length <= 2) {
+        // 可能是单行格式，尝试格式化
+        // 1. 在 --> 前添加换行（但不是第一个）
+        let firstArrowFound = false;
+        processed = processed.replace(/\s+(--[->])/g, (match, arrow) => {
+            if (!firstArrowFound) {
+                firstArrowFound = true;
+                return ' ' + arrow; // 第一个箭头保持在同一行
+            }
+            return '\n    ' + arrow;
+        });
+        
+        // 2. 如果还是单行，尝试在节点ID前添加换行
+        // 匹配模式：空格+大写字母+[或{（节点定义开始）
+        if (processed.split('\n').length <= 2) {
+            processed = processed.replace(/\s+([A-Z])\[/g, '\n    $1[');
+            processed = processed.replace(/\s+([A-Z])\{/g, '\n    $1{');
+        }
+    }
+    
+    // 【最先处理】将节点文本中的英文括号替换为中文括号
+    // 必须在 fixUnclosedBrackets 之前执行，因为英文括号 ( ) 会被 Mermaid 解析为节点形状定义符
+    // 导致后续的括号匹配逻辑出错
+    processed = fixParenthesesInNodes(processed);
+    
+    // 【重要】修复未闭合的括号 - 使用更智能的方式
+    // 先处理整个代码中未闭合的节点定义
+    processed = fixUnclosedBrackets(processed);
+    
+    // 【重要】逐行处理，修复剩余的未闭合括号
+    let lines = processed.split('\n');
+    lines = lines.map(line => {
+        // 跳过空行和注释
+        if (!line.trim() || line.trim().startsWith('%%')) {
+            return line;
+        }
+        
+        // 修复未闭合的方括号节点 [xxx 但没有 ]
+        let openBrackets = (line.match(/\[/g) || []).length;
+        let closeBrackets = (line.match(/\]/g) || []).length;
+        if (openBrackets > closeBrackets) {
+            for (let i = 0; i < openBrackets - closeBrackets; i++) {
+                line = line + ']';
+            }
+        }
+        
+        // 修复未闭合的菱形节点 {xxx 或 {{xxx 但没有 } 或 }}
+        let openBraces = (line.match(/\{/g) || []).length;
+        let closeBraces = (line.match(/\}/g) || []).length;
+        if (openBraces > closeBraces) {
+            for (let i = 0; i < openBraces - closeBraces; i++) {
+                line = line + '}';
+            }
+        }
+        
+        // 修复未闭合的箭头标签 |xxx 但没有 |
+        let pipeCount = (line.match(/\|/g) || []).length;
+        if (pipeCount % 2 === 1) {
+            line = line + '|';
+        }
+        
+        return line;
+    });
+    processed = lines.join('\n');
+    
     // 移除节点文本中的双引号和单引号
     processed = processed.replace(/\[([^\]]*)"([^\]"]*)"\s*\]/g, '[$1$2]');
     processed = processed.replace(/\[([^\]]*)'([^\]']*)'\s*\]/g, '[$1$2]');
-    processed = processed.replace(/\{([^\}]*)"([^\}"]*)"([^\}]*)\}/g, '{$1$2$3}');
-    processed = processed.replace(/\{([^\}]*)'([^\}']*)'([^\}]*)\}/g, '{$1$2$3}');
+    processed = processed.replace(/\{\{([^\}]*)"([^\}"]*)"([^\}]*)\}\}/g, '{{$1$2$3}}');
+    processed = processed.replace(/\{\{([^\}]*)'([^\}']*)'([^\}]*)\}\}/g, '{{$1$2$3}}');
     
     // 修复箭头标签中的引号
     processed = processed.replace(/\|([^|]*)"([^|"]*)"\s*\|/g, '|$1$2|');
@@ -193,10 +281,139 @@ function preprocessMermaidCode(code) {
     // 移除可能导致问题的特殊字符（中文引号等）
     processed = processed.replace(/[""'']/g, '');
     
-    // 确保节点ID不包含特殊字符，将中文节点内容用方括号包裹
-    // 例如: A[读取数据] 是正确的格式
+    // 【重要】处理节点文本中的问号 - 移除
+    processed = processed.replace(/\[([^\]]*)\?\s*\]/g, '[$1]');
+    processed = processed.replace(/\{\{([^\}]*)\?\s*\}\}/g, '{{$1}}');
+    processed = processed.replace(/\{([^\{\}]*)\?\s*\}/g, '{$1}');
+    
+    // 处理箭头标签中的特殊字符（英文括号替换为中文括号）
+    processed = processed.replace(/\|([^|]*)\(\s*\|/g, '|$1（|');
+    processed = processed.replace(/\|([^|]*)\)\s*\|/g, '|$1）|');
+    processed = processed.replace(/\|\s*\(([^|]*)\|/g, '|（$1|');
+    processed = processed.replace(/\|\s*\)([^|]*)\|/g, '|）$1|');
+    
+    // 移除箭头标签中可能残留的括号和问号
+    // 使用[^|\n]避免跨行匹配破坏节点定义
+    processed = processed.replace(/\|([^|\n]*)[()?\[\]{}]+([^|\n]*)\|/g, '|$1$2|');
     
     return processed;
+}
+
+// 修复未闭合的括号 - 智能处理整个代码
+function fixUnclosedBrackets(code) {
+    let result = '';
+    let i = 0;
+    
+    while (i < code.length) {
+        const char = code[i];
+        
+        if (char === '[') {
+            // 找到方括号开始，寻找对应的闭合
+            let content = '[';
+            let depth = 1;
+            i++;
+            
+            while (i < code.length && depth > 0) {
+                const c = code[i];
+                if (c === '[') {
+                    depth++;
+                } else if (c === ']') {
+                    depth--;
+                } else if (c === '\n' || (c === ' ' && i + 1 < code.length && /[A-Z]/.test(code[i + 1]))) {
+                    // 遇到换行或下一个节点定义，说明当前括号未闭合
+                    break;
+                } else if (c === '-' && i + 1 < code.length && code[i + 1] === '-') {
+                    // 遇到箭头，说明当前括号未闭合
+                    break;
+                }
+                content += c;
+                i++;
+            }
+            
+            // 如果depth > 0，说明未闭合，添加闭合括号
+            while (depth > 0) {
+                content += ']';
+                depth--;
+            }
+            result += content;
+        } else if (char === '{') {
+            // 找到花括号开始，寻找对应的闭合
+            let content = '{';
+            let depth = 1;
+            i++;
+            
+            while (i < code.length && depth > 0) {
+                const c = code[i];
+                if (c === '{') {
+                    depth++;
+                } else if (c === '}') {
+                    depth--;
+                } else if (c === '\n' || (c === ' ' && i + 1 < code.length && /[A-Z]/.test(code[i + 1]))) {
+                    // 遇到换行或下一个节点定义，说明当前括号未闭合
+                    break;
+                } else if (c === '-' && i + 1 < code.length && code[i + 1] === '-') {
+                    // 遇到箭头，说明当前括号未闭合
+                    break;
+                }
+                content += c;
+                i++;
+            }
+            
+            // 如果depth > 0，说明未闭合，添加闭合括号
+            while (depth > 0) {
+                content += '}';
+                depth--;
+            }
+            result += content;
+        } else {
+            result += char;
+            i++;
+        }
+    }
+    
+    return result;
+}
+
+
+// 修复节点文本中的英文括号 - 逐行智能处理所有节点类型
+// 覆盖方括号节点 [...]、菱形节点 {...}、双花括号节点 {{...}}
+function fixParenthesesInNodes(code) {
+    let lines = code.split('\n');
+    lines = lines.map(line => {
+        // 跳过空行、注释、flowchart/graph声明行
+        if (!line.trim() || line.trim().startsWith('%%') || /^\s*(flowchart|graph)\s/i.test(line.trim())) {
+            return line;
+        }
+        
+        // 替换方括号节点 [...] 中的英文括号为中文括号
+        line = line.replace(/\[([^\]]*)\]/g, (match, content) => {
+            let fixed = content.replace(/\(/g, '（').replace(/\)/g, '）');
+            return '[' + fixed + ']';
+        });
+        
+        // 替换双花括号节点 {{...}} 中的英文括号为中文括号（先处理双花括号，避免被单花括号匹配）
+        line = line.replace(/\{\{([^}]*)\}\}/g, (match, content) => {
+            let fixed = content.replace(/\(/g, '（').replace(/\)/g, '）');
+            return '{{' + fixed + '}}';
+        });
+        
+        // 替换菱形节点 {...} 中的英文括号为中文括号
+        // 注意：需要排除已处理的 {{...}} 和箭头标签 |...|
+        // 匹配单花括号菱形节点：字母/数字后跟{...}
+        line = line.replace(/(\w)\{([^{}]*)\}/g, (match, prefix, content) => {
+            let fixed = content.replace(/\(/g, '（').replace(/\)/g, '）');
+            return prefix + '{' + fixed + '}';
+        });
+        
+        // 替换箭头标签 |...| 中的英文括号为中文括号
+        line = line.replace(/\|([^|]*)\|/g, (match, content) => {
+            let fixed = content.replace(/\(/g, '（').replace(/\)/g, '）');
+            return '|' + fixed + '|';
+        });
+        
+        return line;
+    });
+    return lines.join('\n');
 }
 
 
@@ -374,6 +591,13 @@ async function generateProblem() {
     setActiveLeftButton('题目');
     currentLeftType = '题目';
     
+    // 重置预生成状态
+    pregenerateStarted = false;
+    pregeneratedModules.clear();
+    pregeneratingModule = null;
+    analysisGenerated = false;
+    frameworkGenerated = false;
+    
     try {
         const response = await fetch('/api/xiaohang/generate_problem', {
             method: 'POST',
@@ -409,7 +633,14 @@ async function generateProblem() {
 // ==================== 左侧内容切换 ====================
 
 // 需要互斥锁定的模块类型
-const LOCKABLE_MODULES = ['思路', '伪代码', '框架', '核心语句'];
+const LOCKABLE_MODULES = ['思路', '框架', '伪代码', '核心语句'];
+
+// 预生成状态跟踪
+let pregenerateStarted = false;  // 是否已启动预生成
+let pregeneratedModules = new Set();  // 已预生成完成的模块
+let pregeneratingModule = null;  // 当前正在预生成的模块
+let analysisGenerated = false;  // 智能审题是否已生成完成
+let frameworkGenerated = false;  // 代码框架是否已生成（用于控制伪代码/代码补全的前置条件）
 
 // 锁定模块按钮
 function lockModuleButtons(currentType) {
@@ -443,10 +674,29 @@ function unlockModuleButtons() {
 }
 
 function showContent(type) {
-    // 检查是否有模块正在生成
-    if (isModuleGenerating && LOCKABLE_MODULES.includes(type) && type !== currentGeneratingModule) {
-        alert(`请等待「${getModuleDisplayName(currentGeneratingModule)}」生成完成后再操作`);
+    // 检查是否有模块正在生成（仅对智能审题的流式生成做锁定）
+    if (isModuleGenerating && type === '思路' && currentGeneratingModule === '思路') {
+        alert('智能审题正在生成中，请稍候');
         return;
+    }
+    
+    // 框架、伪代码、核心语句、正确答案 必须先点击智能审题
+    if (['框架', '伪代码', '核心语句', '正确答案'].includes(type) && !analysisGenerated) {
+        alert('请先点击「智能审题」生成分析内容');
+        return;
+    }
+    
+    // 伪代码、核心语句 必须先点击代码框架
+    if (['伪代码', '核心语句'].includes(type) && !frameworkGenerated) {
+        alert('请先点击「代码框架」完成框架分解');
+        return;
+    }
+    
+    // 切换模块时关闭追问小窗（但不隐藏小人，等新模块加载完再决定）
+    closeFollowupChat();
+    // 如果切换到非悬浮小人模块，隐藏小人
+    if (!AVATAR_FOLLOWUP_MODULES.includes(type)) {
+        hideFloatingAvatar();
     }
     
     setActiveLeftButton(type);
@@ -454,7 +704,7 @@ function showContent(type) {
     
     // 题目描述显示在左侧面板
     if (type === '题目') {
-        closeFloatingPanel();
+        // 不关闭浮动窗口，只是切换左侧内容
         const display = document.getElementById('left-content-display');
         if (problemContent) {
             display.innerHTML = renderMarkdown(problemContent);
@@ -469,7 +719,7 @@ function showContent(type) {
     const typeConfig = {
         '思路': { icon: '💭', title: '智能审题' },
         '框架': { icon: '🏗️', title: '代码框架' },
-        '伪代码': { icon: '📋', title: '代码分析' },
+        '伪代码': { icon: '📋', title: '伪代码' },
         '核心语句': { icon: '🔑', title: '代码补全' },
         '正确答案': { icon: '✅', title: '正确答案' }
     };
@@ -478,22 +728,61 @@ function showContent(type) {
     
     // 检查该模块是否已经有面板（已生成或正在生成）
     const existingPanelId = panelIdByType.get(config.title);
-    const existingPanel = existingPanelId ? minimizedPanels.find(p => p.id === existingPanelId) : null;
+    const existingPanelData = existingPanelId ? floatingPanels.get(existingPanelId) : null;
     
-    if (existingPanel) {
-        // 已有该模块的面板，直接恢复显示
-        // 先保存当前面板
-        if (floatingPanelVisible && currentPanelId !== null && currentPanelId !== existingPanelId) {
-            saveCurrentPanelState();
-        }
-        restoreFromBubble(existingPanelId);
-        
-        // 如果该面板还在流式生成中，恢复流式写入到DOM
+    if (existingPanelData) {
+        // 检查内容是否已生成完成
         const buffer = panelStreamBuffers.get(existingPanelId);
-        if (buffer && !buffer.completed) {
-            // 流还在跑，DOM会由流式循环自动更新（因为currentPanelId已切换回来）
+        const isCompleted = buffer ? buffer.completed : true;
+        
+        if (isCompleted) {
+            // 内容已生成完成，询问用户是否要重新生成
+            const moduleDisplayName = config.title;
+            if (confirm(`「${moduleDisplayName}」已生成，是否要重新生成？\n\n点击"确定"重新生成，点击"取消"查看已有内容。`)) {
+                // 用户选择重新生成，关闭旧面板并生成新内容
+                closeFloatingPanel(existingPanelId);
+                // 清除该模块的追问历史
+                if (followupChatHistory[type]) {
+                    delete followupChatHistory[type];
+                }
+                // 如果是智能审题，需要重置预生成状态
+                if (type === '思路') {
+                    pregenerateStarted = false;
+                    pregeneratedModules.clear();
+                    pregeneratingModule = null;
+                    // 同时清除其他依赖模块的面板
+                    ['代码框架', '伪代码', '代码补全'].forEach(title => {
+                        const pId = panelIdByType.get(title);
+                        if (pId) {
+                            closeFloatingPanel(pId);
+                        }
+                    });
+                    // 清除其他模块的追问历史
+                    delete followupChatHistory['框架'];
+                    delete followupChatHistory['伪代码'];
+                    delete followupChatHistory['核心语句'];
+                }
+                // 继续执行下面的生成逻辑
+            } else {
+                // 用户选择查看已有内容
+                if (existingPanelData.isMinimized) {
+                    restoreFromMinimized(existingPanelId);
+                } else {
+                    bringPanelToFront(existingPanelId);
+                }
+                currentPanelId = existingPanelId;
+                return;
+            }
+        } else {
+            // 内容还在生成中，直接显示
+            if (existingPanelData.isMinimized) {
+                restoreFromMinimized(existingPanelId);
+            } else {
+                bringPanelToFront(existingPanelId);
+            }
+            currentPanelId = existingPanelId;
+            return;
         }
-        return;
     }
     
     openFloatingPanel(config.icon, config.title);
@@ -501,10 +790,317 @@ function showContent(type) {
     // 记录该模块类型对应的面板ID
     panelIdByType.set(config.title, currentPanelId);
     
-    if (type === '正确答案') {
+    if (type === '思路') {
+        // 智能审题：流式生成，完成后触发后台预生成其他模块
+        getGuidanceToFloatingWithPregenerate(type);
+    } else if (type === '正确答案') {
+        // 正确答案：检查是否已有缓存
         getCorrectAnswerToFloating();
+    } else if (['框架', '伪代码', '核心语句'].includes(type)) {
+        if (type === '框架') {
+            // 框架：使用预生成内容
+            getPregeneratedContent(type);
+        } else {
+            // 伪代码/核心语句：基于最新框架分解的叶子节点重新生成
+            // regenerateModuleWithLeafNodes 内部会自行管理面板的创建
+            regenerateModuleWithLeafNodes(type === '伪代码' ? '伪代码' : '核心语句');
+            return;
+        }
     } else {
         getGuidanceToFloating(type);
+    }
+}
+
+// 智能审题生成完成后，触发后台预生成框架、伪代码、核心语句
+async function triggerPregenerate() {
+    if (pregenerateStarted) return;
+    pregenerateStarted = true;
+    pregeneratedModules.clear();
+    pregeneratingModule = null;
+    
+    try {
+        const response = await fetch('/api/xiaohang/pregenerate_all', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include'
+        });
+        
+        if (!response.ok) {
+            console.error('预生成请求失败');
+            return;
+        }
+        
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            
+            buffer += decoder.decode(value);
+            const lines = buffer.split('\n');
+            buffer = lines.pop(); // 保留不完整的行
+            
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                    const msg = JSON.parse(line);
+                    if (msg.status === 'generating') {
+                        pregeneratingModule = msg.module;
+                        console.log(`[预生成] 正在生成: ${msg.module}`);
+                    } else if (msg.status === 'done') {
+                        pregeneratedModules.add(msg.module);
+                        pregeneratingModule = null;
+                        console.log(`[预生成] 完成: ${msg.module}`);
+                        // 如果有面板正在等待这个模块，刷新它
+                        refreshWaitingPanel(msg.module);
+                    } else if (msg.status === 'all_done') {
+                        console.log('[预生成] 全部完成');
+                    } else if (msg.status === 'error') {
+                        console.error('[预生成] 错误:', msg.message);
+                    }
+                } catch (e) {
+                    // 忽略解析错误
+                }
+            }
+        }
+    } catch (error) {
+        console.error('预生成出错:', error);
+    }
+}
+
+// 刷新正在等待预生成内容的面板
+function refreshWaitingPanel(moduleType) {
+    const typeToTitle = {
+        '框架': '代码框架',
+        '伪代码': '伪代码',
+        '核心语句': '代码补全'
+    };
+    const title = typeToTitle[moduleType];
+    if (!title) return;
+    
+    const panelId = panelIdByType.get(title);
+    if (!panelId) return;
+    
+    // 找到面板，如果它还在显示"等待中"状态，则加载内容
+    const panelData = floatingPanels.get(panelId);
+    if (!panelData) return;
+    
+    const buffer = panelStreamBuffers.get(panelId);
+    if (buffer && buffer.waiting) {
+        // 面板正在等待，现在加载内容
+        buffer.waiting = false;
+        loadPregeneratedToPanel(moduleType, panelId);
+    }
+}
+
+// 获取预生成的内容并显示到浮动面板
+async function getPregeneratedContent(type) {
+    const display = getFloatingPanelContent();
+    if (!display) return;
+    const targetPanelId = currentPanelId;
+    
+    // 初始化缓冲区
+    panelStreamBuffers.set(targetPanelId, { fullText: '', type: type, completed: false, waiting: false });
+    currentGuidanceType = type;
+    
+    // 检查是否已预生成完成
+    if (pregeneratedModules.has(type)) {
+        // 已完成，直接加载
+        await loadPregeneratedToPanel(type, targetPanelId);
+    } else {
+        // 还没完成，显示等待状态
+        const moduleNames = { '框架': '代码框架', '伪代码': '伪代码', '核心语句': '代码补全' };
+        const waitingFor = pregeneratingModule ? `正在生成「${pregeneratingModule === type ? moduleNames[type] || type : pregeneratingModule}」` : '等待预生成';
+        display.innerHTML = `<p class="loading">${waitingFor}，请稍候...</p>`;
+        
+        // 标记为等待状态
+        const buffer = panelStreamBuffers.get(targetPanelId);
+        if (buffer) buffer.waiting = true;
+    }
+}
+
+// 从后端加载预生成内容到面板
+async function loadPregeneratedToPanel(type, targetPanelId) {
+    // 获取目标面板的内容元素
+    const getTargetDisplay = () => {
+        const panelEl = document.getElementById(`floating-panel-${targetPanelId}`);
+        return panelEl ? panelEl.querySelector('.floating-panel-content') : null;
+    };
+    
+    const display = getTargetDisplay();
+    if (display && currentPanelId === targetPanelId) {
+        display.innerHTML = '<p class="loading">正在加载内容...</p>';
+    }
+    
+    try {
+        const response = await fetch('/api/xiaohang/get_pregenerated', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ type })
+        });
+        
+        if (!response.ok) throw new Error('获取内容失败');
+        
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let fullText = '';
+        
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            fullText += decoder.decode(value);
+        }
+        
+        // 更新缓冲区
+        const buffer = panelStreamBuffers.get(targetPanelId);
+        if (buffer) {
+            buffer.fullText = fullText;
+            buffer.completed = true;
+        }
+        
+        // 渲染内容
+        const finalDisplay = getTargetDisplay();
+        if (finalDisplay && currentPanelId === targetPanelId) {
+            if (type === '框架') {
+                await renderFrameworkToFloating(fullText, finalDisplay);
+            } else if (type === '伪代码') {
+                await renderCodeAnalysisContent(fullText, finalDisplay);
+            } else if (type === '核心语句') {
+                finalDisplay.innerHTML = renderMarkdown(fullText);
+                highlightCode(finalDisplay);
+                highlightTodoMarkers(finalDisplay);
+            } else {
+                finalDisplay.innerHTML = renderMarkdown(fullText);
+                highlightCode(finalDisplay);
+            }
+            showFollowUpInput(finalDisplay);
+            saveCurrentPanelState();
+        } else {
+            // 面板已被切走，保存内容到panelData
+            const panelData = floatingPanels.get(targetPanelId);
+            if (panelData) {
+                const tempDiv = document.createElement('div');
+                tempDiv.className = 'markdown-body';
+                tempDiv.innerHTML = renderMarkdown(fullText);
+                highlightCode(tempDiv);
+                panelData.content = tempDiv.innerHTML;
+            }
+        }
+    } catch (error) {
+        console.error('Error loading pregenerated:', error);
+        const errorDisplay = getTargetDisplay();
+        if (currentPanelId === targetPanelId && errorDisplay) {
+            errorDisplay.innerHTML = '<p style="color: #e74c3c;">加载内容失败，请重试</p>';
+        }
+        const buffer = panelStreamBuffers.get(targetPanelId);
+        if (buffer) buffer.completed = true;
+    }
+}
+
+// 智能审题专用：流式生成 + 完成后触发预生成
+async function getGuidanceToFloatingWithPregenerate(type) {
+    const targetPanelId = currentPanelId;
+    
+    // 获取目标面板的内容元素
+    const getTargetDisplay = () => {
+        const panelEl = document.getElementById(`floating-panel-${targetPanelId}`);
+        return panelEl ? panelEl.querySelector('.floating-panel-content') : null;
+    };
+    
+    const display = getTargetDisplay();
+    if (!display) return;
+    display.innerHTML = '<p class="loading">正在生成内容...</p>';
+    
+    panelStreamBuffers.set(targetPanelId, { fullText: '', type: type, completed: false });
+    currentGuidanceType = type;
+    
+    if (LOCKABLE_MODULES.includes(type)) {
+        lockModuleButtons(type);
+    }
+    
+    try {
+        const response = await fetch('/api/xiaohang/get_guidance', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ type })
+        });
+        
+        if (!response.ok) throw new Error('获取内容失败');
+        
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let fullText = '';
+        
+        const currentDisplay = getTargetDisplay();
+        if (currentDisplay && currentPanelId === targetPanelId) {
+            currentDisplay.innerHTML = '';
+        }
+        
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            
+            fullText += decoder.decode(value);
+            
+            const buffer = panelStreamBuffers.get(targetPanelId);
+            if (buffer) buffer.fullText = fullText;
+            
+            const streamDisplay = getTargetDisplay();
+            if (streamDisplay && currentPanelId === targetPanelId) {
+                streamDisplay.innerHTML = renderMarkdown(fullText);
+                highlightCode(streamDisplay);
+            }
+        }
+        
+        const buffer = panelStreamBuffers.get(targetPanelId);
+        if (buffer) buffer.completed = true;
+        
+        const finalDisplay = getTargetDisplay();
+        if (finalDisplay && currentPanelId === targetPanelId) {
+            if (type === '思路') {
+                await renderAnalysisContent(fullText, finalDisplay);
+            } else {
+                await renderMermaidDiagrams(finalDisplay);
+            }
+            showFollowUpInput(finalDisplay);
+            saveCurrentPanelState();
+        } else {
+            // 面板已被切走，保存内容到panelData
+            const panelData = floatingPanels.get(targetPanelId);
+            if (panelData) {
+                const tempDiv = document.createElement('div');
+                tempDiv.className = 'markdown-body';
+                tempDiv.innerHTML = renderMarkdown(fullText);
+                highlightCode(tempDiv);
+                panelData.content = tempDiv.innerHTML;
+            }
+        }
+        
+        // 智能审题完成，标记并触发预生成
+        analysisGenerated = true;
+        triggerPregenerate();
+        
+    } catch (error) {
+        console.error('Error:', error);
+        const errorDisplay = getTargetDisplay();
+        if (errorDisplay && currentPanelId === targetPanelId) {
+            errorDisplay.innerHTML = '<p style="color: #e74c3c;">获取内容失败，请重试</p>';
+        } else {
+            const panelData = floatingPanels.get(targetPanelId);
+            if (panelData) {
+                panelData.content = '<p style="color: #e74c3c;">获取内容失败，请重试</p>';
+            }
+        }
+        const buffer = panelStreamBuffers.get(targetPanelId);
+        if (buffer) buffer.completed = true;
+    } finally {
+        if (LOCKABLE_MODULES.includes(type)) {
+            unlockModuleButtons();
+        }
     }
 }
 
@@ -513,7 +1109,7 @@ function getModuleDisplayName(type) {
     const names = {
         '思路': '智能审题',
         '框架': '代码框架',
-        '伪代码': '代码分析',
+        '伪代码': '伪代码',
         '核心语句': '代码补全'
     };
     return names[type] || type;
@@ -525,37 +1121,9 @@ function setActiveLeftButton(type) {
     });
 }
 
-// 保存当前面板状态到 minimizedPanels
-function saveCurrentPanelState() {
-    if (currentPanelId === null) return;
-    const panel = document.getElementById('floating-panel');
-    const content = document.getElementById('floating-panel-content');
-    const icon = document.getElementById('floating-panel-icon').textContent;
-    const title = document.getElementById('floating-panel-title-text').textContent;
-    
-    const state = {
-        id: currentPanelId,
-        icon: icon,
-        title: title,
-        content: content.innerHTML,
-        position: {
-            left: panel.style.left,
-            top: panel.style.top,
-            width: panel.style.width,
-            height: panel.style.height
-        }
-    };
-    
-    const index = minimizedPanels.findIndex(p => p.id === currentPanelId);
-    if (index !== -1) {
-        // 保留 bubblePosition
-        state.bubblePosition = minimizedPanels[index].bubblePosition;
-        minimizedPanels[index] = state;
-    }
-}
-
 async function getGuidanceToFloating(type) {
-    const display = document.getElementById('floating-panel-content');
+    const display = getFloatingPanelContent();
+    if (!display) return;
     display.innerHTML = '<p class="loading">正在生成内容...</p>';
     
     // 记录本次请求对应的面板ID
@@ -586,9 +1154,16 @@ async function getGuidanceToFloating(type) {
         const decoder = new TextDecoder();
         let fullText = '';
         
+        // 获取目标面板的内容元素
+        const getTargetDisplay = () => {
+            const panelEl = document.getElementById(`floating-panel-${targetPanelId}`);
+            return panelEl ? panelEl.querySelector('.floating-panel-content') : null;
+        };
+        
         // 只有当前面板可见时才清空DOM
-        if (currentPanelId === targetPanelId) {
-            display.innerHTML = '';
+        const targetDisplay = getTargetDisplay();
+        if (targetDisplay && currentPanelId === targetPanelId) {
+            targetDisplay.innerHTML = '';
         }
         
         while (true) {
@@ -602,15 +1177,15 @@ async function getGuidanceToFloating(type) {
             if (buffer) buffer.fullText = fullText;
             
             // 只有当前显示的面板是目标面板时，才更新DOM
-            if (currentPanelId === targetPanelId) {
+            const currentDisplay = getTargetDisplay();
+            if (currentDisplay && currentPanelId === targetPanelId) {
                 if (type === '框架') {
-                    // 流式显示框架生成进度，避免长时间loading导致看起来卡死
-                    display.innerHTML = '<p class="loading">正在生成代码框架...</p>' +
+                    currentDisplay.innerHTML = '<p class="loading">正在生成代码框架...</p>' +
                         '<div style="margin-top:12px;padding:12px;background:#f8fafc;border-radius:8px;font-size:13px;color:#64748b;max-height:200px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;">' +
                         fullText.substring(Math.max(0, fullText.length - 300)) + '</div>';
                 } else {
-                    display.innerHTML = renderMarkdown(fullText);
-                    highlightCode(display);
+                    currentDisplay.innerHTML = renderMarkdown(fullText);
+                    highlightCode(currentDisplay);
                 }
             }
         }
@@ -620,53 +1195,48 @@ async function getGuidanceToFloating(type) {
         if (buffer) buffer.completed = true;
         
         // 只有当前面板可见时才做最终渲染
-        if (currentPanelId === targetPanelId) {
+        const finalDisplay = getTargetDisplay();
+        if (finalDisplay && currentPanelId === targetPanelId) {
             if (type === '框架') {
-                await renderFrameworkToFloating(fullText, display);
+                await renderFrameworkToFloating(fullText, finalDisplay);
             } else if (type === '思路') {
-                await renderAnalysisContent(fullText, display);
+                await renderAnalysisContent(fullText, finalDisplay);
             } else if (type === '伪代码') {
-                await renderCodeAnalysisContent(fullText, display);
+                await renderCodeAnalysisContent(fullText, finalDisplay);
             } else if (type === '核心语句') {
-                display.innerHTML = renderMarkdown(fullText);
-                highlightCode(display);
-                highlightTodoMarkers(display);
+                finalDisplay.innerHTML = renderMarkdown(fullText);
+                highlightCode(finalDisplay);
+                highlightTodoMarkers(finalDisplay);
             } else {
-                await renderMermaidDiagrams(display);
+                await renderMermaidDiagrams(finalDisplay);
             }
-            showFollowUpInput(display);
-        } else {
-            // 面板不可见，将最终渲染结果保存到缓冲区的 finalHtml
-            // 当面板恢复时会用 fullText 重新渲染
-        }
-        
-        // 同步保存到 minimizedPanels（无论面板是否可见）
-        if (currentPanelId === targetPanelId) {
+            showFollowUpInput(finalDisplay);
             saveCurrentPanelState();
         } else {
-            // 面板已被切走，需要离线渲染并保存
-            const tempDiv = document.createElement('div');
-            tempDiv.className = 'markdown-body';
-            if (type === '框架') {
-                tempDiv.innerHTML = '<p>代码框架已生成，点击查看</p>';
-            } else {
-                tempDiv.innerHTML = renderMarkdown(fullText);
-                highlightCode(tempDiv);
-            }
-            const idx = minimizedPanels.findIndex(p => p.id === targetPanelId);
-            if (idx !== -1) {
-                minimizedPanels[idx].content = tempDiv.innerHTML;
+            // 面板已被切走，保存内容到panelData
+            const panelData = floatingPanels.get(targetPanelId);
+            if (panelData) {
+                const tempDiv = document.createElement('div');
+                tempDiv.className = 'markdown-body';
+                if (type === '框架') {
+                    tempDiv.innerHTML = '<p>代码框架已生成，点击查看</p>';
+                } else {
+                    tempDiv.innerHTML = renderMarkdown(fullText);
+                    highlightCode(tempDiv);
+                }
+                panelData.content = tempDiv.innerHTML;
             }
         }
         
     } catch (error) {
         console.error('Error:', error);
-        if (currentPanelId === targetPanelId) {
-            display.innerHTML = '<p style="color: #e74c3c;">获取内容失败，请重试</p>';
+        const errorDisplay = document.getElementById(`floating-panel-${targetPanelId}`)?.querySelector('.floating-panel-content');
+        if (errorDisplay && currentPanelId === targetPanelId) {
+            errorDisplay.innerHTML = '<p style="color: #e74c3c;">获取内容失败，请重试</p>';
         } else {
-            const idx = minimizedPanels.findIndex(p => p.id === targetPanelId);
-            if (idx !== -1) {
-                minimizedPanels[idx].content = '<p style="color: #e74c3c;">获取内容失败，请重试</p>';
+            const panelData = floatingPanels.get(targetPanelId);
+            if (panelData) {
+                panelData.content = '<p style="color: #e74c3c;">获取内容失败，请重试</p>';
             }
         }
         const buffer = panelStreamBuffers.get(targetPanelId);
@@ -687,8 +1257,58 @@ async function renderAnalysisContent(text, container) {
     // 应用背景区分
     applyAnalysisSections(container);
     
+    // 移除非黄色/蓝色背景的引导性问题（保留 guiding-question 和 final-question，移除 think-prompt 及后续多余问题）
+    removeExtraQuestions(container);
+    
     // 渲染Mermaid图表
     await renderMermaidDiagrams(container);
+}
+
+// 移除智能审题中多余的问题，只保留黄色(guiding-question)和蓝色(final-question)背景的问题
+function removeExtraQuestions(container) {
+    // 移除所有 think-prompt 元素（紫色背景）
+    container.querySelectorAll('.think-prompt').forEach(el => el.remove());
+    
+    // 找到最后一个 guiding-question 或 final-question
+    const keepQuestions = container.querySelectorAll('.guiding-question, .final-question');
+    if (keepQuestions.length === 0) return;
+    
+    const lastKeep = keepQuestions[keepQuestions.length - 1];
+    
+    // 移除最后一个保留问题之后的所有问句段落（以？或?结尾的<p>）
+    let sibling = lastKeep.nextElementSibling;
+    while (sibling) {
+        const next = sibling.nextElementSibling;
+        const text = sibling.textContent.trim();
+        // 移除以问号结尾的段落或包含引导性问句特征的段落
+        if (sibling.tagName === 'P' && (text.endsWith('？') || text.endsWith('?'))) {
+            sibling.remove();
+        }
+        // 移除残留的 think-prompt
+        if (sibling.classList && sibling.classList.contains('think-prompt')) {
+            sibling.remove();
+        }
+        sibling = next;
+    }
+    
+    // 同样处理被包裹在 section 容器内的多余问题
+    container.querySelectorAll('.analysis-section, .decompose-section, .ipo-section, .visualization-section').forEach(section => {
+        section.querySelectorAll('.think-prompt').forEach(el => el.remove());
+        
+        const sectionKeepQuestions = section.querySelectorAll('.guiding-question, .final-question');
+        if (sectionKeepQuestions.length === 0) return;
+        
+        const lastSectionKeep = sectionKeepQuestions[sectionKeepQuestions.length - 1];
+        let sib = lastSectionKeep.nextElementSibling;
+        while (sib) {
+            const nextSib = sib.nextElementSibling;
+            const sibText = sib.textContent.trim();
+            if (sib.tagName === 'P' && (sibText.endsWith('？') || sibText.endsWith('?'))) {
+                sib.remove();
+            }
+            sib = nextSib;
+        }
+    });
 }
 
 // 渲染代码分析内容 - 带背景区分
@@ -696,6 +1316,9 @@ async function renderCodeAnalysisContent(text, container) {
     let html = renderMarkdown(text);
     container.innerHTML = html;
     highlightCode(container);
+    
+    // 美化伪代码块
+    renderPseudocodeBlocks(container);
     
     // 应用背景区分
     applyCodeAnalysisSections(container);
@@ -812,7 +1435,8 @@ function wrapHeaderSection(header, sectionClass, titleIcon) {
 }
 
 async function getCorrectAnswerToFloating() {
-    const display = document.getElementById('floating-panel-content');
+    const display = getFloatingPanelContent();
+    if (!display) return;
     display.innerHTML = '<p class="loading">正在获取正确答案...</p>';
     
     // 记录本次请求对应的面板ID
@@ -823,6 +1447,12 @@ async function getCorrectAnswerToFloating() {
     
     // 设置当前辅导类型（用于追问）
     currentGuidanceType = '正确答案';
+    
+    // 获取目标面板的内容元素
+    const getTargetDisplay = () => {
+        const panelEl = document.getElementById(`floating-panel-${targetPanelId}`);
+        return panelEl ? panelEl.querySelector('.floating-panel-content') : null;
+    };
     
     try {
         const response = await fetch('/api/xiaohang/get_correct_answer', {
@@ -837,8 +1467,9 @@ async function getCorrectAnswerToFloating() {
         const decoder = new TextDecoder();
         let fullText = '';
         
-        if (currentPanelId === targetPanelId) {
-            display.innerHTML = '';
+        const targetDisplay = getTargetDisplay();
+        if (targetDisplay && currentPanelId === targetPanelId) {
+            targetDisplay.innerHTML = '';
         }
         
         while (true) {
@@ -850,33 +1481,36 @@ async function getCorrectAnswerToFloating() {
             const buffer = panelStreamBuffers.get(targetPanelId);
             if (buffer) buffer.fullText = fullText;
             
-            if (currentPanelId === targetPanelId) {
-                display.innerHTML = renderMarkdown(fullText);
-                highlightCode(display);
+            const currentDisplay = getTargetDisplay();
+            if (currentDisplay && currentPanelId === targetPanelId) {
+                currentDisplay.innerHTML = renderMarkdown(fullText);
+                highlightCode(currentDisplay);
             }
         }
         
         const buffer = panelStreamBuffers.get(targetPanelId);
         if (buffer) buffer.completed = true;
         
-        if (currentPanelId === targetPanelId) {
-            addAnswerCopyButton(display, fullText);
-            showFollowUpInput(display);
+        const finalDisplay = getTargetDisplay();
+        if (finalDisplay && currentPanelId === targetPanelId) {
+            addAnswerCopyButton(finalDisplay, fullText);
+            showFollowUpInput(finalDisplay);
             saveCurrentPanelState();
         } else {
-            const tempDiv = document.createElement('div');
-            tempDiv.innerHTML = renderMarkdown(fullText);
-            highlightCode(tempDiv);
-            const idx = minimizedPanels.findIndex(p => p.id === targetPanelId);
-            if (idx !== -1) {
-                minimizedPanels[idx].content = tempDiv.innerHTML;
+            const panelData = floatingPanels.get(targetPanelId);
+            if (panelData) {
+                const tempDiv = document.createElement('div');
+                tempDiv.innerHTML = renderMarkdown(fullText);
+                highlightCode(tempDiv);
+                panelData.content = tempDiv.innerHTML;
             }
         }
         
     } catch (error) {
         console.error('Error:', error);
-        if (currentPanelId === targetPanelId) {
-            display.innerHTML = '<p style="color: #e74c3c;">获取答案失败，请重试</p>';
+        const errorDisplay = getTargetDisplay();
+        if (errorDisplay && currentPanelId === targetPanelId) {
+            errorDisplay.innerHTML = '<p style="color: #e74c3c;">获取答案失败，请重试</p>';
         }
         const buffer = panelStreamBuffers.get(targetPanelId);
         if (buffer) buffer.completed = true;
@@ -1682,14 +2316,72 @@ async function onDifficultyChange(newDifficulty) {
         const selector = document.getElementById('difficulty-selector');
         selector.className = 'difficulty-selector ' + newDifficulty;
         
-        // 清空编辑器并生成新题目
+        // ====== 全面清理所有模块状态 ======
+        
+        // 1. 中止所有正在进行的流式请求
+        for (const [panelId, controller] of activeAbortControllers) {
+            try { controller.abort(); } catch(e) {}
+        }
+        activeAbortControllers.clear();
+        
+        // 2. 关闭所有浮动面板
+        const allPanelIds = Array.from(floatingPanels.keys());
+        for (const panelId of allPanelIds) {
+            const panelEl = document.getElementById(`floating-panel-${panelId}`);
+            if (panelEl) panelEl.remove();
+        }
+        floatingPanels.clear();
+        panelIdByType.clear();
+        panelStreamBuffers.clear();
+        panelContentReady.clear();
+        currentPanelId = null;
+        activePanelId = null;
+        floatingPanelVisible = false;
+        panelZIndexCounter = 1000;
+        
+        // 3. 清理最小化气泡
+        renderBubbles();
+        
+        // 4. 关闭追问小窗和悬浮小人
+        closeFollowupChat();
+        hideFloatingAvatar();
+        followupChatHistory = {};
+        currentGuidanceType = null;
+        
+        // 5. 解锁模块按钮
+        isModuleGenerating = false;
+        currentGeneratingModule = null;
+        isRightModuleGenerating = false;
+        currentRightGeneratingType = null;
+        unlockModuleButtons();
+        
+        // 6. 重置预生成状态
+        pregenerateStarted = false;
+        pregeneratedModules.clear();
+        pregeneratingModule = null;
+        analysisGenerated = false;
+        frameworkGenerated = false;
+        
+        // 7. 清理 Mermaid 残留
+        if (typeof cleanupMermaidErrors === 'function') {
+            cleanupMermaidErrors();
+        }
+        
+        // 8. 清空编辑器
         const lang = document.getElementById('language-selector').value;
         setEditorCode(getDefaultCode(lang));
+        if (typeof MonacoEditorManager !== 'undefined' && MonacoEditorManager.clearDiagnosisMarkers) {
+            MonacoEditorManager.clearDiagnosisMarkers();
+        }
+        diagnosisHasErrors = true;
+        codeIsCorrect = false;
         
-        // 清空右侧内容
+        // 9. 清空右侧内容
         document.getElementById('right-content-display').innerHTML = 
             '<p style="color: #8899aa; text-align: center;">点击上方按钮获取提示或分析结果</p>';
+        updateRightButtonsAfterSubmit();
         
+        // 10. 生成新题目
         generateProblem();
         
     } catch (error) {
@@ -2028,6 +2720,7 @@ async function renderFrameworkToFloating(text, container) {
             const data = JSON.parse(jsonStr);
             if (data && data.parentProblem) {
                 renderInteractiveFramework(data, container);
+                frameworkGenerated = true;
                 return;
             }
         }
@@ -2113,13 +2806,16 @@ function renderInteractiveFramework(data, container) {
     const cardId = FrameworkSystem.generateCardId();
     const cardData = {
         id: cardId,
+        parentId: null,  // 根节点没有父节点
         layer: data.level || 0,
         name: data.parentProblem || '主问题',
+        description: '',  // 根节点描述
         controlType: 'sequence',
         ipo: data.overallIPO || {},
         subProblems: data.subProblems || [],
+        needsFurtherDecomposition: true,  // 根节点默认需要分解
         completed: false,
-        isLeaf: true
+        isLeaf: !(data.subProblems && data.subProblems.length > 0)  // 如果有子问题则不是叶子节点
     };
     
     FrameworkSystem.cards.push(cardData);
@@ -2146,10 +2842,64 @@ function renderInteractiveFramework(data, container) {
     `;
     
     container.innerHTML = html;
+    
+    // 渲染主卡片的 Mermaid 图
+    renderFrameworkMermaid(cardId, cardData);
+    
+    // 如果有子问题，自动渲染子卡片（第一层分解结果）
+    if (data.subProblems && data.subProblems.length > 0) {
+        // 更新主卡片状态为"已分解"
+        const gate = document.getElementById(`fgate-${cardId}`);
+        const status = document.getElementById(`fstatus-${cardId}`);
+        if (gate) gate.style.display = 'none';
+        if (status) {
+            status.textContent = '📂 已分解';
+            status.style.background = 'rgba(255,255,255,0.3)';
+        }
+        cardData.isLeaf = false;
+        
+        // L0分解到L1时，在原有子模块基础上，前面插入"全局定义模块"，后面追加"main函数模块"
+        const rootLayer = data.level || 0;
+        const childLayer = rootLayer + 1;
+        let enrichedSubProblems = data.subProblems;
+        if (rootLayer === 0) {
+            const globalDefModule = {
+                name: '全局定义模块',
+                description: '包含头文件引用（如 #include<stdio.h>）、宏定义（如 #define N 100）、全局变量声明等',
+                controlType: 'sequence',
+                ipo: {
+                    input: '无外部输入',
+                    storage: '全局常量、宏定义、全局变量',
+                    process: '声明和定义程序所需的头文件、宏和全局变量',
+                    output: '为后续模块提供全局可用的定义和声明'
+                },
+                needsFurtherDecomposition: false,
+                codeHint: '可以考虑使用 #include 引入标准库头文件，使用 #define 定义常量，声明全局变量等'
+            };
+            const mainFuncModule = {
+                name: 'main函数模块',
+                description: '程序的主入口函数 int main()，负责组织调用各功能模块、控制程序整体执行流程',
+                controlType: 'sequence',
+                ipo: {
+                    input: '程序启动',
+                    storage: 'main函数内的局部变量',
+                    process: '按顺序调用各功能模块，组织程序整体执行流程',
+                    output: '程序执行结果，return 0'
+                },
+                needsFurtherDecomposition: false,
+                codeHint: '可以考虑在 main 函数中按顺序调用各功能模块，组织输入、处理、输出的整体流程'
+            };
+            enrichedSubProblems = [globalDefModule, ...data.subProblems, mainFuncModule];
+        }
+        
+        // 渲染子卡片
+        renderFrameworkSubCards(cardId, enrichedSubProblems, childLayer);
+    }
+    
     FrameworkSystem.recalculateCounts();
     
-    // 渲染 Mermaid 图
-    renderFrameworkMermaid(cardId, cardData);
+    // 初始渲染完成后同步叶子节点到后端
+    syncLeafNodesToBackend();
 }
 
 // 创建框架卡片 HTML
@@ -2276,6 +3026,8 @@ async function renderFrameworkMermaid(cardId, cardData) {
     } catch (error) {
         console.error('Mermaid 渲染失败:', error);
         container.innerHTML = `<span style="color: #64748b; font-size: 13px;">📊 ${cardData.name}</span>`;
+    } finally {
+        cleanupMermaidErrors();
     }
 }
 
@@ -2487,6 +3239,9 @@ async function continueFrameworkDecompose(cardId) {
     // 显示加载状态
     subContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #64748b;"><span style="display: inline-block; width: 20px; height: 20px; border: 2px solid #e2e8f0; border-top-color: #3b82f6; border-radius: 50%; animation: spin 0.8s linear infinite;"></span> 正在分解子模块...</div>';
     
+    // 构建分解历史路径（从根节点到当前节点）
+    const decompositionPath = buildDecompositionPath(cardId);
+    
     try {
         const response = await fetch('/api/xiaohang/decompose_problem', {
             method: 'POST',
@@ -2494,7 +3249,11 @@ async function continueFrameworkDecompose(cardId) {
             credentials: 'include',
             body: JSON.stringify({
                 level: cardData.layer + 1,
-                parentProblem: cardData.name
+                parentProblem: cardData.name,
+                parentDescription: cardData.description || '',
+                parentIpo: cardData.ipo || {},
+                parentControlType: cardData.controlType || 'sequence',
+                decompositionPath: decompositionPath
             })
         });
         
@@ -2511,9 +3270,11 @@ async function continueFrameworkDecompose(cardId) {
         }
         
         const data = parseFrameworkResponse(fullText);
-        if (data && data.subProblems) {
+        if (data && data.subProblems && data.subProblems.length > 0) {
             cardData.subProblems = data.subProblems;
             renderFrameworkSubCards(cardId, data.subProblems, cardData.layer + 1);
+            // 分解完成后自动同步叶子节点并重新生成伪代码和代码补全
+            autoSyncAfterDecompose();
         } else {
             subContainer.innerHTML = '<div style="padding: 16px; text-align: center; color: #64748b; background: #f8fafc; border-radius: 8px;">该模块已足够简单，无需继续分解</div>';
         }
@@ -2521,6 +3282,30 @@ async function continueFrameworkDecompose(cardId) {
         console.error('分解失败:', error);
         subContainer.innerHTML = `<div style="padding: 16px; text-align: center; color: #ef4444;">分解失败，请重试 <button onclick="continueFrameworkDecompose('${cardId}')" style="margin-left: 8px; padding: 4px 12px; cursor: pointer;">重试</button></div>`;
     }
+}
+
+// 构建从根节点到当前节点的分解路径
+function buildDecompositionPath(cardId) {
+    const path = [];
+    let currentCard = FrameworkSystem.cards.find(c => c.id === cardId);
+    
+    while (currentCard) {
+        path.unshift({
+            name: currentCard.name,
+            description: currentCard.description || '',
+            controlType: currentCard.controlType || 'sequence',
+            ipo: currentCard.ipo || {},
+            layer: currentCard.layer
+        });
+        
+        if (currentCard.parentId) {
+            currentCard = FrameworkSystem.cards.find(c => c.id === currentCard.parentId);
+        } else {
+            break;
+        }
+    }
+    
+    return path;
 }
 
 function parseFrameworkResponse(text) {
@@ -2660,6 +3445,206 @@ function checkFrameworkAllCompleted() {
             `);
         }
     }
+    
+    // 每次有模块完成时，同步叶子节点到后端
+    syncLeafNodesToBackend();
+}
+
+// ==================== 叶子节点收集与同步 ====================
+
+// 收集当前框架树中所有叶子节点（按执行顺序）
+function collectFrameworkLeafNodes() {
+    const leafNodes = [];
+    
+    // 递归遍历卡片树，按顺序收集叶子节点
+    function collectFromCard(cardId) {
+        const card = FrameworkSystem.cards.find(c => c.id === cardId);
+        if (!card) return;
+        
+        // 找到该卡片的所有子卡片
+        const children = FrameworkSystem.cards.filter(c => c.parentId === cardId);
+        
+        if (children.length === 0) {
+            // 这是叶子节点
+            leafNodes.push({
+                name: card.name,
+                description: card.description || '',
+                controlType: card.controlType || 'sequence',
+                ipo: card.ipo || {},
+                codeHint: card.codeHint || '',
+                layer: card.layer
+            });
+        } else {
+            // 有子节点，递归收集
+            children.forEach(child => collectFromCard(child.id));
+        }
+    }
+    
+    // 从根节点开始收集
+    const rootCards = FrameworkSystem.cards.filter(c => c.parentId === null);
+    rootCards.forEach(root => {
+        const children = FrameworkSystem.cards.filter(c => c.parentId === root.id);
+        if (children.length === 0) {
+            // 根节点本身就是叶子
+            collectFromCard(root.id);
+        } else {
+            children.forEach(child => collectFromCard(child.id));
+        }
+    });
+    
+    return leafNodes;
+}
+
+// 同步叶子节点到后端
+async function syncLeafNodesToBackend() {
+    const leafNodes = collectFrameworkLeafNodes();
+    if (leafNodes.length === 0) return;
+    
+    try {
+        await fetch('/api/xiaohang/save_framework_leaf_nodes', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ leafNodes })
+        });
+        console.log(`[框架同步] 已同步 ${leafNodes.length} 个叶子节点到后端`);
+    } catch (error) {
+        console.error('[框架同步] 同步叶子节点失败:', error);
+    }
+}
+
+// 基于最终叶子节点重新生成伪代码或代码补全
+async function regenerateModuleWithLeafNodes(moduleType) {
+    const typeToTitle = { '伪代码': '伪代码', '核心语句': '代码补全' };
+    const title = typeToTitle[moduleType];
+    if (!title) return;
+    
+    // 先同步叶子节点
+    await syncLeafNodesToBackend();
+    
+    // 找到对应面板或创建新面板
+    const existingPanelId = panelIdByType.get(title);
+    if (existingPanelId) {
+        // 使用原始关闭函数，避免触发hideFloatingAvatar（马上会重新显示）
+        _originalCloseFloatingPanel(existingPanelId);
+    }
+    
+    const config = { '伪代码': { icon: '📋', title: '伪代码' }, '核心语句': { icon: '🔑', title: '代码补全' } };
+    const cfg = config[moduleType];
+    openFloatingPanel(cfg.icon, cfg.title);
+    panelIdByType.set(cfg.title, currentPanelId);
+    
+    // 立即显示追问小人（不等生成完成）
+    currentGuidanceType = moduleType;
+    if (AVATAR_FOLLOWUP_MODULES.includes(moduleType)) {
+        showFloatingAvatar(moduleType);
+    }
+    
+    const display = getFloatingPanelContent();
+    if (!display) return;
+    
+    const targetPanelId = currentPanelId;
+    panelStreamBuffers.set(targetPanelId, { fullText: '', type: moduleType, completed: false });
+    
+    display.innerHTML = '<p class="loading">正在基于最终分解结果重新生成...</p>';
+    
+    try {
+        const response = await fetch('/api/xiaohang/regenerate_with_leaf_nodes', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ module: moduleType })
+        });
+        
+        if (!response.ok) throw new Error('重新生成失败');
+        
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let fullText = '';
+        
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            fullText += decoder.decode(value);
+            
+            const panelEl = document.getElementById(`floating-panel-${targetPanelId}`);
+            const contentEl = panelEl ? panelEl.querySelector('.floating-panel-content') : null;
+            if (contentEl) {
+                if (moduleType === '伪代码') {
+                    contentEl.innerHTML = renderMarkdown(fullText);
+                    highlightCode(contentEl);
+                    renderPseudocodeBlocks(contentEl);
+                } else {
+                    contentEl.innerHTML = renderMarkdown(fullText);
+                    highlightCode(contentEl);
+                    highlightTodoMarkers(contentEl);
+                }
+            }
+        }
+        
+        const buffer = panelStreamBuffers.get(targetPanelId);
+        if (buffer) {
+            buffer.fullText = fullText;
+            buffer.completed = true;
+        }
+        
+        // 最终渲染
+        const panelEl = document.getElementById(`floating-panel-${targetPanelId}`);
+        const contentEl = panelEl ? panelEl.querySelector('.floating-panel-content') : null;
+        if (contentEl) {
+            contentEl.innerHTML = renderMarkdown(fullText);
+            highlightCode(contentEl);
+            if (moduleType === '伪代码') renderPseudocodeBlocks(contentEl);
+            if (moduleType === '核心语句') highlightTodoMarkers(contentEl);
+            // 设置当前辅导类型并显示追问小人
+            currentGuidanceType = moduleType;
+            showFollowUpInput(contentEl);
+            saveCurrentPanelState();
+        }
+        
+    } catch (error) {
+        console.error('重新生成失败:', error);
+        if (display) {
+            display.innerHTML = '<p style="color: #e74c3c;">重新生成失败，请重试</p>';
+        }
+    }
+}
+
+// 同步分解结果并重新生成伪代码和代码补全
+async function syncAndRegenerateModules() {
+    const leafNodes = collectFrameworkLeafNodes();
+    if (leafNodes.length === 0) {
+        alert('⚠️ 暂无叶子节点，请先完成框架分解');
+        return;
+    }
+    
+    // 检查是否还有待分解的节点
+    const pendingCards = FrameworkSystem.cards.filter(c => c.isLeaf && c.needsFurtherDecomposition && !c.completed);
+    if (pendingCards.length > 0) {
+        const proceed = confirm(`还有 ${pendingCards.length} 个模块尚未处理（可能需要继续分解或编写代码）。\n\n是否仍然基于当前分解结果重新生成伪代码和代码补全？`);
+        if (!proceed) return;
+    }
+    
+    // 先同步叶子节点
+    await syncLeafNodesToBackend();
+    
+    // 依次重新生成伪代码和代码补全
+    alert(`将基于 ${leafNodes.length} 个最终子模块重新生成伪代码和代码补全，确保一一对应。`);
+    
+    await regenerateModuleWithLeafNodes('伪代码');
+    // 等待伪代码生成完成后再生成代码补全
+    setTimeout(async () => {
+        await regenerateModuleWithLeafNodes('核心语句');
+    }, 1000);
+}
+
+// 分解完成后自动同步叶子节点到后端（静默执行，无弹窗）
+async function autoSyncAfterDecompose() {
+    const leafNodes = collectFrameworkLeafNodes();
+    if (leafNodes.length === 0) return;
+    
+    // 同步叶子节点到后端，伪代码/代码补全将在用户点击时基于最新叶子节点生成
+    await syncLeafNodesToBackend();
 }
 
 // ==================== 工具函数 ====================
@@ -2691,8 +3676,10 @@ function highlightGuidingQuestions(html) {
     // 匹配以问号结尾的段落（引导性问题）
     // 匹配模式：包含"思考"、"想一想"、"试试"、"能否"、"如何"、"为什么"、"什么"等引导词的问句
     const guidingPatterns = [
-        /(<p>)(.*?(?:思考|想一想|试试|能否|如何|为什么|什么|是否|怎样|怎么|哪些|哪个|请问|你认为|你觉得|能不能|可以|应该).*?\?)<\/p>/gi,
-        /(<p>)(.*?(?:思考|想一想|试试|能否|如何|为什么|什么|是否|怎样|怎么|哪些|哪个|请问|你认为|你觉得|能不能|可以|应该).*?？)<\/p>/gi
+        /(<p>)(.*?(?:思考|想一想|试试|能否|如何|为什么|什么|是否|怎样|怎么|哪些|哪个|请问|你认为|你觉得|能不能|可以|应该|理解|清晰|疑问|困难|还有).*?\?)<\/p>/gi,
+        /(<p>)(.*?(?:思考|想一想|试试|能否|如何|为什么|什么|是否|怎样|怎么|哪些|哪个|请问|你认为|你觉得|能不能|可以|应该|理解|清晰|疑问|困难|还有).*?？)<\/p>/gi,
+        // 匹配包含"你对"、"你能"、"这段"、"这个"开头的问句
+        /(<p>)((?:你对|你能|这段|这个|哪个).*?[?？])<\/p>/gi
     ];
     
     guidingPatterns.forEach(pattern => {
@@ -2702,23 +3689,16 @@ function highlightGuidingQuestions(html) {
     // 匹配最后的总结性问题（通常在文末，包含"现在"、"接下来"、"最后"等词）
     const finalPatterns = [
         /(<p>)(.*?(?:现在|接下来|最后|综上|总结|那么).*?(?:你能|你可以|试着|开始).*?[?？])<\/p>/gi,
-        /(<p>)(.*?(?:准备好|开始编写|动手|实现).*?[?？])<\/p>/gi
+        /(<p>)(.*?(?:准备好|开始编写|动手|实现).*?[?？])<\/p>/gi,
+        // 匹配包含"如果理解清楚了"、"完成后"等引导下一步的句子
+        /(<p>)(.*?(?:如果理解清楚了|完成后可以|你可以点击).*?)<\/p>/gi
     ];
     
     finalPatterns.forEach(pattern => {
         html = html.replace(pattern, '<div class="final-question">$2</div>');
     });
     
-    // 匹配思考提示（包含"提示"、"注意"、"关键"等词的句子）
-    const thinkPatterns = [
-        /(<p>)(💡.*?)<\/p>/gi,
-        /(<p>)(🤔.*?)<\/p>/gi,
-        /(<p>)((?:提示|注意|关键|重点)[:：].*?)<\/p>/gi
-    ];
-    
-    thinkPatterns.forEach(pattern => {
-        html = html.replace(pattern, '<div class="think-prompt">$2</div>');
-    });
+    // 思考提示不再高亮显示，将在后处理中移除
     
     return html;
 }
@@ -2765,6 +3745,139 @@ function highlightTodoMarkers(container) {
     });
 }
 
+// ==================== 伪代码美化渲染 ====================
+
+// 伪代码语法高亮关键词
+const PSEUDO_KEYWORDS = [
+    'if', 'then', 'else', 'end if', 'end for', 'end while', 'end function', 'end procedure',
+    'for', 'to', 'do', 'while', 'repeat', 'until', 'return', 'break', 'continue',
+    'function', 'procedure', 'call', 'Algorithm', 'Input', 'Output',
+    'and', 'or', 'not', 'true', 'false', 'null', 'nil'
+];
+
+// 对伪代码文本进行语法高亮
+function highlightPseudocodeSyntax(line) {
+    // 先转义HTML
+    let escaped = line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    // 拆分注释和代码部分，注释不再做其他高亮
+    let commentPart = '';
+    const commentMatch = escaped.match(/^(.*?)(\/\/.*)$/);
+    if (commentMatch) {
+        escaped = commentMatch[1];
+        commentPart = '<span class="pseudo-comment">' + commentMatch[2] + '</span>';
+    }
+
+    // 1. 高亮字符串 "..."
+    escaped = escaped.replace(/"([^"]*)"/g, '<span class="pseudo-string">"$1"</span>');
+
+    // 2. 高亮赋值箭头 ←
+    escaped = escaped.replace(/←/g, '<span class="pseudo-operator">←</span>');
+
+    // 3. 高亮比较/算术运算符
+    escaped = escaped.replace(/(≤|≥|≠|==|!=|&lt;=|&gt;=|&lt;|&gt;|\+|\*|\/|%)/g, '<span class="pseudo-operator">$1</span>');
+
+    // 4. 高亮数字
+    escaped = escaped.replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="pseudo-number">$1</span>');
+
+    // 5. 高亮关键词（从长到短排序，避免部分匹配问题）
+    const sortedKeywords = [...PSEUDO_KEYWORDS].sort((a, b) => b.length - a.length);
+    sortedKeywords.forEach(kw => {
+        const regex = new RegExp('(?<![\\w<\\/])\\b(' + kw.replace(/\s+/g, '\\s+') + ')\\b(?![\\w>])', 'gi');
+        escaped = escaped.replace(regex, '<span class="pseudo-keyword">$1</span>');
+    });
+
+    return escaped + commentPart;
+}
+
+// 将伪代码代码块转换为美化的卡片式渲染
+function renderPseudocodeBlocks(container) {
+    const codeBlocks = container.querySelectorAll('pre code.language-pseudocode');
+
+    codeBlocks.forEach((codeEl, idx) => {
+        const pre = codeEl.parentElement;
+        // 如果已经被 enhanceCodeBlocks 包裹了，取外层容器
+        const wrapper = pre.parentElement && pre.parentElement.classList.contains('code-block-container')
+            ? pre.parentElement : pre;
+
+        const rawText = codeEl.textContent;
+        const lines = rawText.split('\n');
+        // 去掉首尾空行
+        while (lines.length && lines[0].trim() === '') lines.shift();
+        while (lines.length && lines[lines.length - 1].trim() === '') lines.pop();
+
+        // 查找前面最近的标题作为模块名
+        let moduleTitle = '';
+        let moduleIcon = '📋';
+        let headerEl = null;
+        let prev = wrapper.previousElementSibling;
+        while (prev) {
+            if (prev.tagName && /^H[1-6]$/i.test(prev.tagName)) {
+                moduleTitle = prev.textContent.replace(/^[\s📋📝🔧⚙️🏗️💡🔑✅]+/, '').trim();
+                headerEl = prev;
+                break;
+            }
+            // 如果遇到另一个代码块就停止
+            if (prev.querySelector && prev.querySelector('pre')) break;
+            prev = prev.previousElementSibling;
+        }
+
+        // 根据标题内容选择图标
+        const titleLower = moduleTitle.toLowerCase();
+        if (titleLower.includes('全局') || titleLower.includes('定义') || titleLower.includes('声明')) moduleIcon = '📦';
+        else if (titleLower.includes('输入') || titleLower.includes('读取')) moduleIcon = '📥';
+        else if (titleLower.includes('输出') || titleLower.includes('结果') || titleLower.includes('判断')) moduleIcon = '📤';
+        else if (titleLower.includes('统计') || titleLower.includes('计算') || titleLower.includes('频率')) moduleIcon = '📊';
+        else if (titleLower.includes('检查') || titleLower.includes('验证') || titleLower.includes('遍历')) moduleIcon = '🔍';
+        else if (titleLower.includes('排序') || titleLower.includes('查找')) moduleIcon = '🔄';
+        else if (titleLower.includes('main') || titleLower.includes('主函数') || titleLower.includes('主程序')) moduleIcon = '🚀';
+        else if (titleLower.includes('初始化')) moduleIcon = '⚙️';
+        else if (titleLower.includes('递归') || titleLower.includes('回溯')) moduleIcon = '🔁';
+        else if (titleLower.includes('栈') || titleLower.includes('队列')) moduleIcon = '📚';
+
+        // 构建行号和高亮后的代码行
+        let lineNumsHtml = '';
+        let linesHtml = '';
+        lines.forEach((line, i) => {
+            lineNumsHtml += `<span class="line-num">${i + 1}</span>`;
+            linesHtml += `<div class="pseudocode-line">${highlightPseudocodeSyntax(line)}</div>`;
+        });
+
+        // 构建卡片
+        const card = document.createElement('div');
+        card.className = 'pseudocode-module-card';
+        card.innerHTML = `
+            <div class="pseudocode-module-header">
+                <span class="module-icon">${moduleIcon}</span>
+                <span class="module-number">模块 ${idx + 1}</span>
+                ${moduleTitle}
+            </div>
+            <div class="pseudocode-body">
+                <table><tr>
+                    <td class="pseudocode-line-numbers">${lineNumsHtml}</td>
+                    <td class="pseudocode-lines">${linesHtml}</td>
+                </tr></table>
+            </div>
+            <div class="pseudocode-footer">
+                <button class="pseudocode-footer-btn" onclick="copyPseudocodeBlock(this)" title="复制伪代码">📋 复制</button>
+            </div>
+        `;
+        // 存储原始文本用于复制
+        card.dataset.rawText = rawText;
+
+        // 替换原始元素
+        if (headerEl) headerEl.remove();
+        wrapper.parentNode.replaceChild(card, wrapper);
+    });
+}
+
+// 复制伪代码块
+function copyPseudocodeBlock(btn) {
+    const card = btn.closest('.pseudocode-module-card');
+    const text = card.dataset.rawText || '';
+    copyToClipboard(text, btn, '📋 复制', '✅ 已复制');
+}
+
 // 增强代码块 - 添加复制按钮、主题切换、发送到编辑器功能
 function enhanceCodeBlocks(container) {
     const codeBlocks = container.querySelectorAll('pre');
@@ -2782,6 +3895,9 @@ function enhanceCodeBlocks(container) {
         
         // 跳过mermaid代码块
         if (lang === 'mermaid') return;
+        
+        // 跳过pseudocode代码块（由renderPseudocodeBlocks单独处理）
+        if (lang === 'pseudocode') return;
         
         // 创建容器
         const wrapper = document.createElement('div');
@@ -2918,8 +4034,17 @@ function renderMath(container) {
 // 当前辅导类型（用于追问）
 let currentGuidanceType = null;
 
-// 显示追问输入框
+// 追问小窗当前模块
+let followupChatCurrentModule = null;
+
+// 显示追问输入框（仅对非悬浮小人模块显示内联追问按钮）
 function showFollowUpInput(container) {
+    // 如果当前模块属于悬浮小人追问模块，显示悬浮小人，不显示内联按钮
+    if (AVATAR_FOLLOWUP_MODULES.includes(currentGuidanceType)) {
+        showFloatingAvatar(currentGuidanceType);
+        return;
+    }
+
     // 检查是否已经有追问框
     if (container.querySelector('.follow-up-container')) {
         return;
@@ -3157,206 +4282,355 @@ enterPracticePage = function() {
 
 // ==================== 浮动窗口功能 ====================
 
-function openFloatingPanel(icon, title) {
-    const panel = document.getElementById('floating-panel');
-    const iconEl = document.getElementById('floating-panel-icon');
-    const titleEl = document.getElementById('floating-panel-title-text');
+// 创建浮动窗口DOM元素
+function createFloatingPanelElement(panelId) {
+    const panel = document.createElement('div');
+    panel.id = `floating-panel-${panelId}`;
+    panel.className = 'floating-panel';
+    panel.innerHTML = `
+        <div class="floating-panel-header" data-panel-id="${panelId}">
+            <div class="floating-panel-title">
+                <span class="floating-panel-icon">💭</span>
+                <span class="floating-panel-title-text">智能审题</span>
+            </div>
+            <div class="floating-panel-controls">
+                <button class="floating-panel-btn minimize" onclick="minimizeFloatingPanel(${panelId})" title="最小化">−</button>
+                <button class="floating-panel-btn maximize" onclick="maximizeFloatingPanel(${panelId})" title="最大化">□</button>
+                <button class="floating-panel-btn close" onclick="closeFloatingPanel(${panelId})" title="关闭">×</button>
+            </div>
+        </div>
+        <div class="floating-panel-content markdown-body">
+            <p class="loading">正在加载...</p>
+        </div>
+        <div class="floating-panel-resize right"></div>
+        <div class="floating-panel-resize left"></div>
+        <div class="floating-panel-resize bottom"></div>
+        <div class="floating-panel-resize top"></div>
+        <div class="floating-panel-resize corner-br"></div>
+        <div class="floating-panel-resize corner-bl"></div>
+        <div class="floating-panel-resize corner-tr"></div>
+        <div class="floating-panel-resize corner-tl"></div>
+    `;
     
-    // 如果当前有显示的面板，先保存它的状态到圆球
-    if (floatingPanelVisible && currentPanelId !== null) {
-        saveCurrentPanelState();
+    // 点击窗口时将其置顶
+    panel.addEventListener('mousedown', () => bringPanelToFront(panelId));
+    
+    return panel;
+}
+
+// 计算新窗口的位置（级联偏移）
+function calculateNewPanelPosition() {
+    const screenWidth = window.innerWidth;
+    const screenHeight = window.innerHeight;
+    
+    // 基础尺寸：横向2/3，纵向5/6
+    const width = Math.floor(screenWidth * 2 / 3);
+    const height = Math.floor(screenHeight * 5 / 6);
+    
+    // 基础位置：居中
+    let left = Math.floor((screenWidth - width) / 2);
+    let top = Math.floor((screenHeight - height) / 2);
+    
+    // 根据已有窗口数量进行级联偏移
+    const visiblePanels = Array.from(floatingPanels.values()).filter(p => !p.isMinimized);
+    const offset = visiblePanels.length * 30;
+    left += offset;
+    top += offset;
+    
+    // 确保不超出屏幕
+    left = Math.min(left, screenWidth - width - 20);
+    top = Math.min(top, screenHeight - height - 20);
+    left = Math.max(20, left);
+    top = Math.max(20, top);
+    
+    return { left, top, width, height };
+}
+
+// 将窗口置顶
+function bringPanelToFront(panelId) {
+    const panelData = floatingPanels.get(panelId);
+    if (!panelData || panelData.isMinimized) return;
+    
+    panelZIndexCounter++;
+    panelData.zIndex = panelZIndexCounter;
+    
+    const panelEl = document.getElementById(`floating-panel-${panelId}`);
+    if (panelEl) {
+        panelEl.style.zIndex = panelZIndexCounter;
     }
     
-    iconEl.textContent = icon;
-    titleEl.textContent = title;
-    
-    // 检查是否已有相同类型的面板在圆球中
-    const existingPanel = minimizedPanels.find(p => p.title === title);
-    if (existingPanel) {
-        // 恢复已有面板
-        restoreFromBubble(existingPanel.id);
+    activePanelId = panelId;
+    currentPanelId = panelId;
+}
+
+function openFloatingPanel(icon, title) {
+    // 检查是否已有相同类型的面板
+    const existingPanelId = panelIdByType.get(title);
+    if (existingPanelId && floatingPanels.has(existingPanelId)) {
+        const existingPanel = floatingPanels.get(existingPanelId);
+        if (existingPanel.isMinimized) {
+            // 从最小化恢复
+            restoreFromMinimized(existingPanelId);
+        } else {
+            // 已经显示，置顶
+            bringPanelToFront(existingPanelId);
+        }
+        currentPanelId = existingPanelId;
         return;
     }
     
     // 检查是否已达到最大数量
-    if (minimizedPanels.length >= MAX_BUBBLES) {
-        alert('最多只能同时保留5个窗口，请先关闭一些窗口');
+    if (floatingPanels.size >= MAX_PANELS) {
+        alert('最多只能同时打开5个窗口，请先关闭一些窗口');
         return;
     }
     
     // 创建新面板
-    currentPanelId = Date.now();
+    const panelId = Date.now();
+    const position = calculateNewPanelPosition();
+    panelZIndexCounter++;
     
-    // 设置初始位置（横向2/3，纵向5/6，居中悬浮）
-    if (!floatingPanelVisible) {
-        const screenWidth = window.innerWidth;
-        const screenHeight = window.innerHeight;
-        
-        // 横向宽度占屏幕的2/3，纵向高度占屏幕的5/6
-        const initialWidth = Math.floor(screenWidth * 2 / 3);
-        const initialHeight = Math.floor(screenHeight * 5 / 6);
-        
-        // 横向居中，纵向居中
-        const initialLeft = Math.floor((screenWidth - initialWidth) / 2);
-        const initialTop = Math.floor((screenHeight - initialHeight) / 2);
-        
-        panel.style.left = initialLeft + 'px';
-        panel.style.top = initialTop + 'px';
-        panel.style.width = initialWidth + 'px';
-        panel.style.height = initialHeight + 'px';
-    }
-    
-    // 添加到最小化列表（但不显示圆球，因为面板是打开的）
-    minimizedPanels.push({
-        id: currentPanelId,
+    const panelData = {
+        id: panelId,
         icon: icon,
         title: title,
         content: '<p class="loading">正在加载...</p>',
-        position: {
-            left: panel.style.left,
-            top: panel.style.top,
-            width: panel.style.width,
-            height: panel.style.height
-        }
-    });
-    
-    panel.classList.add('active');
-    floatingPanelVisible = true;
-    floatingPanelMinimized = false;
-    
-    // 初始化拖拽和调整大小
-    initFloatingPanelDrag();
-    initFloatingPanelResize();
-    
-    // 渲染圆球
-    renderBubbles();
-}
-
-function closeFloatingPanel() {
-    const panel = document.getElementById('floating-panel');
-    panel.classList.remove('active');
-    panel.classList.remove('maximized');
-    floatingPanelVisible = false;
-    floatingPanelMinimized = false;
-    floatingPanelMaximized = false;
-    preMaximizePosition = null;
-    
-    // 重置最大化按钮
-    const btn = document.getElementById('floating-panel-maximize-btn');
-    if (btn) { btn.textContent = '□'; btn.title = '最大化'; }
-    
-    // 如果当前面板有ID，从最小化列表中移除，并清理类型映射和缓冲区
-    if (currentPanelId !== null) {
-        const titleEl = document.getElementById('floating-panel-title-text');
-        if (titleEl) {
-            panelIdByType.delete(titleEl.textContent);
-        }
-        panelStreamBuffers.delete(currentPanelId);
-        removeBubble(currentPanelId);
-        currentPanelId = null;
-    }
-}
-
-function minimizeFloatingPanel() {
-    const panel = document.getElementById('floating-panel');
-    const content = document.getElementById('floating-panel-content');
-    const icon = document.getElementById('floating-panel-icon').textContent;
-    const title = document.getElementById('floating-panel-title-text').textContent;
-    
-    // 如果处于最大化状态，先还原
-    if (floatingPanelMaximized) {
-        panel.classList.remove('maximized');
-        floatingPanelMaximized = false;
-        if (preMaximizePosition) {
-            panel.style.left = preMaximizePosition.left;
-            panel.style.top = preMaximizePosition.top;
-            panel.style.width = preMaximizePosition.width;
-            panel.style.height = preMaximizePosition.height;
-        }
-        const maxBtn = document.getElementById('floating-panel-maximize-btn');
-        if (maxBtn) { maxBtn.textContent = '□'; maxBtn.title = '最大化'; }
-        preMaximizePosition = null;
-    }
-    
-    // 检查是否已达到最大圆球数量
-    if (minimizedPanels.length >= MAX_BUBBLES && currentPanelId === null) {
-        alert('最多只能同时保留5个最小化窗口');
-        return;
-    }
-    
-    // 保存当前面板状态
-    const panelState = {
-        id: currentPanelId !== null ? currentPanelId : Date.now(),
-        icon: icon,
-        title: title,
-        content: content.innerHTML,
-        position: {
-            left: panel.style.left,
-            top: panel.style.top,
-            width: panel.style.width,
-            height: panel.style.height
-        }
+        position: position,
+        isMinimized: false,
+        isMaximized: false,
+        preMaximizePosition: null,
+        zIndex: panelZIndexCounter
     };
     
-    // 如果是新面板，添加到列表
-    if (currentPanelId === null) {
-        minimizedPanels.push(panelState);
-    } else {
-        // 更新已有面板
-        const index = minimizedPanels.findIndex(p => p.id === currentPanelId);
-        if (index !== -1) {
-            minimizedPanels[index] = panelState;
-        }
-    }
+    floatingPanels.set(panelId, panelData);
+    panelIdByType.set(title, panelId);
     
-    currentPanelId = null;
+    // 创建DOM元素
+    const container = document.getElementById('floating-panels-container');
+    const panelEl = createFloatingPanelElement(panelId);
+    container.appendChild(panelEl);
     
-    // 隐藏面板
-    panel.classList.remove('active');
-    floatingPanelVisible = false;
+    // 设置内容
+    const iconEl = panelEl.querySelector('.floating-panel-icon');
+    const titleEl = panelEl.querySelector('.floating-panel-title-text');
+    iconEl.textContent = icon;
+    titleEl.textContent = title;
     
-    // 渲染圆球
+    // 设置位置和大小
+    panelEl.style.left = position.left + 'px';
+    panelEl.style.top = position.top + 'px';
+    panelEl.style.width = position.width + 'px';
+    panelEl.style.height = position.height + 'px';
+    panelEl.style.zIndex = panelZIndexCounter;
+    
+    // 显示面板
+    panelEl.classList.add('active');
+    
+    // 初始化拖拽和调整大小
+    initPanelDrag(panelId);
+    initPanelResize(panelId);
+    
+    currentPanelId = panelId;
+    activePanelId = panelId;
+    floatingPanelVisible = true;
+    
+    // 更新最小化圆球
     renderBubbles();
 }
 
-function maximizeFloatingPanel() {
-    const panel = document.getElementById('floating-panel');
-    const btn = document.getElementById('floating-panel-maximize-btn');
+function closeFloatingPanel(panelId) {
+    if (!panelId && currentPanelId) panelId = currentPanelId;
+    if (!panelId) return;
     
-    if (floatingPanelMaximized) {
-        // 还原
-        panel.classList.remove('maximized');
-        floatingPanelMaximized = false;
-        
-        // 恢复之前的位置和尺寸
-        if (preMaximizePosition) {
-            panel.style.left = preMaximizePosition.left;
-            panel.style.top = preMaximizePosition.top;
-            panel.style.width = preMaximizePosition.width;
-            panel.style.height = preMaximizePosition.height;
+    const panelData = floatingPanels.get(panelId);
+    if (!panelData) return;
+    
+    // 清理类型映射和缓冲区
+    panelIdByType.delete(panelData.title);
+    panelStreamBuffers.delete(panelId);
+    
+    // 移除DOM元素
+    const panelEl = document.getElementById(`floating-panel-${panelId}`);
+    if (panelEl) {
+        panelEl.remove();
+    }
+    
+    // 从管理器中移除
+    floatingPanels.delete(panelId);
+    
+    // 更新当前面板ID
+    if (currentPanelId === panelId) {
+        currentPanelId = null;
+        for (const [id, data] of floatingPanels) {
+            if (!data.isMinimized) {
+                currentPanelId = id;
+                activePanelId = id;
+                break;
+            }
         }
+    }
+    
+    floatingPanelVisible = floatingPanels.size > 0;
+    
+    // 更新最小化圆球
+    renderBubbles();
+}
+
+function minimizeFloatingPanel(panelId) {
+    if (!panelId && currentPanelId) panelId = currentPanelId;
+    if (!panelId) return;
+    
+    const panelData = floatingPanels.get(panelId);
+    if (!panelData) return;
+    
+    const panelEl = document.getElementById(`floating-panel-${panelId}`);
+    if (!panelEl) return;
+    
+    // 如果处于最大化状态，先还原
+    if (panelData.isMaximized) {
+        panelEl.classList.remove('maximized');
+        panelData.isMaximized = false;
+        if (panelData.preMaximizePosition) {
+            panelEl.style.left = panelData.preMaximizePosition.left;
+            panelEl.style.top = panelData.preMaximizePosition.top;
+            panelEl.style.width = panelData.preMaximizePosition.width;
+            panelEl.style.height = panelData.preMaximizePosition.height;
+        }
+        panelData.preMaximizePosition = null;
+    }
+    
+    // 保存当前内容
+    const contentEl = panelEl.querySelector('.floating-panel-content');
+    panelData.content = contentEl.innerHTML;
+    panelData.position = {
+        left: parseInt(panelEl.style.left),
+        top: parseInt(panelEl.style.top),
+        width: parseInt(panelEl.style.width),
+        height: parseInt(panelEl.style.height)
+    };
+    panelData.isMinimized = true;
+    
+    // 隐藏面板
+    panelEl.classList.remove('active');
+    
+    // 更新当前面板ID
+    if (currentPanelId === panelId) {
+        currentPanelId = null;
+        for (const [id, data] of floatingPanels) {
+            if (!data.isMinimized) {
+                currentPanelId = id;
+                activePanelId = id;
+                break;
+            }
+        }
+    }
+    
+    // 更新最小化圆球
+    renderBubbles();
+}
+
+function maximizeFloatingPanel(panelId) {
+    if (!panelId && currentPanelId) panelId = currentPanelId;
+    if (!panelId) return;
+    
+    const panelData = floatingPanels.get(panelId);
+    if (!panelData) return;
+    
+    const panelEl = document.getElementById(`floating-panel-${panelId}`);
+    if (!panelEl) return;
+    
+    const maxBtn = panelEl.querySelector('.floating-panel-btn.maximize');
+    
+    if (panelData.isMaximized) {
+        // 还原
+        panelEl.classList.remove('maximized');
+        panelData.isMaximized = false;
         
-        if (btn) {
-            btn.textContent = '□';
-            btn.title = '最大化';
+        if (panelData.preMaximizePosition) {
+            panelEl.style.left = panelData.preMaximizePosition.left;
+            panelEl.style.top = panelData.preMaximizePosition.top;
+            panelEl.style.width = panelData.preMaximizePosition.width;
+            panelEl.style.height = panelData.preMaximizePosition.height;
+        }
+        panelData.preMaximizePosition = null;
+        
+        if (maxBtn) {
+            maxBtn.textContent = '□';
+            maxBtn.title = '最大化';
         }
     } else {
         // 保存当前位置和尺寸
-        preMaximizePosition = {
-            left: panel.style.left,
-            top: panel.style.top,
-            width: panel.style.width,
-            height: panel.style.height
+        panelData.preMaximizePosition = {
+            left: panelEl.style.left,
+            top: panelEl.style.top,
+            width: panelEl.style.width,
+            height: panelEl.style.height
         };
         
         // 最大化
-        panel.classList.add('maximized');
-        floatingPanelMaximized = true;
+        panelEl.classList.add('maximized');
+        panelData.isMaximized = true;
         
-        if (btn) {
-            btn.textContent = '❐';
-            btn.title = '还原';
+        if (maxBtn) {
+            maxBtn.textContent = '❐';
+            maxBtn.title = '还原';
         }
+    }
+    
+    // 置顶
+    bringPanelToFront(panelId);
+}
+
+// 从最小化恢复
+function restoreFromMinimized(panelId) {
+    const panelData = floatingPanels.get(panelId);
+    if (!panelData) return;
+    
+    const panelEl = document.getElementById(`floating-panel-${panelId}`);
+    if (!panelEl) return;
+    
+    // 恢复位置
+    if (panelData.position) {
+        panelEl.style.left = panelData.position.left + 'px';
+        panelEl.style.top = panelData.position.top + 'px';
+        panelEl.style.width = panelData.position.width + 'px';
+        panelEl.style.height = panelData.position.height + 'px';
+    }
+    
+    // 恢复内容
+    const contentEl = panelEl.querySelector('.floating-panel-content');
+    if (panelData.content) {
+        contentEl.innerHTML = panelData.content;
+    }
+    
+    panelData.isMinimized = false;
+    panelEl.classList.add('active');
+    
+    // 置顶
+    bringPanelToFront(panelId);
+    
+    currentPanelId = panelId;
+    floatingPanelVisible = true;
+    
+    // 更新最小化圆球
+    renderBubbles();
+    
+    // 检查是否需要显示悬浮追问小人
+    const titleToType = {
+        '智能审题': '思路',
+        '代码框架': '框架',
+        '伪代码': '伪代码',
+        '代码补全': '核心语句'
+    };
+    const moduleType = titleToType[panelData.title];
+    if (moduleType && AVATAR_FOLLOWUP_MODULES.includes(moduleType)) {
+        followupChatCurrentModule = moduleType;
+        currentGuidanceType = moduleType;
+        const avatar = document.getElementById('floating-avatar');
+        if (avatar) avatar.classList.add('visible');
+        syncChatWindowPosition();
+    } else {
+        hideFloatingAvatar();
     }
 }
 
@@ -3366,28 +4640,30 @@ function renderBubbles() {
     
     container.innerHTML = '';
     
-    // 如果没有最小化的面板，直接返回
-    if (minimizedPanels.length === 0) return;
+    // 获取所有最小化的面板
+    const minimizedList = Array.from(floatingPanels.values()).filter(p => p.isMinimized);
+    
+    if (minimizedList.length === 0) return;
     
     // 获取右侧编辑器区域位置
     const rightPanel = document.getElementById('right-panel');
     const rightPanelRect = rightPanel ? rightPanel.getBoundingClientRect() : null;
     
-    minimizedPanels.forEach((panelState, index) => {
+    minimizedList.forEach((panelData, index) => {
         const bubble = document.createElement('div');
         bubble.className = 'minimized-bubble';
-        bubble.id = `bubble-${panelState.id}`;
+        bubble.id = `bubble-${panelData.id}`;
         bubble.innerHTML = `
-            <span class="bubble-icon">${panelState.icon}</span>
+            <span class="bubble-icon">${panelData.icon}</span>
             <span class="bubble-close">×</span>
         `;
-        bubble.title = panelState.title;
+        bubble.title = panelData.title;
         
         // 设置圆球位置
         let bubbleLeft, bubbleTop;
-        if (panelState.bubblePosition) {
-            bubbleLeft = panelState.bubblePosition.left;
-            bubbleTop = panelState.bubblePosition.top;
+        if (panelData.bubblePosition) {
+            bubbleLeft = panelData.bubblePosition.left;
+            bubbleTop = panelData.bubblePosition.top;
         } else {
             // 默认位置：右侧编辑器上方横向排列
             if (rightPanelRect) {
@@ -3397,8 +4673,7 @@ function renderBubbles() {
                 bubbleLeft = window.innerWidth * 0.45 + index * 62;
                 bubbleTop = 80;
             }
-            // 保存默认位置
-            panelState.bubblePosition = { left: bubbleLeft, top: bubbleTop };
+            panelData.bubblePosition = { left: bubbleLeft, top: bubbleTop };
         }
         
         bubble.style.left = bubbleLeft + 'px';
@@ -3407,7 +4682,7 @@ function renderBubbles() {
         container.appendChild(bubble);
         
         // 添加事件监听
-        initBubbleEvents(bubble, panelState.id);
+        initBubbleEvents(bubble, panelData.id);
     });
 }
 
@@ -3422,7 +4697,7 @@ function initBubbleEvents(bubble, panelId) {
         if (e.target.classList.contains('bubble-close')) {
             e.stopPropagation();
             e.preventDefault();
-            removeBubbleAndRender(panelId);
+            closeFloatingPanel(panelId);
             return;
         }
         
@@ -3449,7 +4724,6 @@ function initBubbleEvents(bubble, panelId) {
         const moveX = Math.abs(e.clientX - startX);
         const moveY = Math.abs(e.clientY - startY);
         
-        // 移动超过5px才算拖动
         if (moveX > 5 || moveY > 5) {
             hasMoved = true;
         }
@@ -3457,7 +4731,6 @@ function initBubbleEvents(bubble, panelId) {
         let newLeft = e.clientX - localDragOffset.x;
         let newTop = e.clientY - localDragOffset.y;
         
-        // 边界限制
         newLeft = Math.max(0, Math.min(newLeft, window.innerWidth - 50));
         newTop = Math.max(0, Math.min(newTop, window.innerHeight - 50));
         
@@ -3474,9 +4747,9 @@ function initBubbleEvents(bubble, panelId) {
         document.body.style.userSelect = '';
         
         // 保存圆球位置
-        const panelIndex = minimizedPanels.findIndex(p => p.id === panelId);
-        if (panelIndex !== -1) {
-            minimizedPanels[panelIndex].bubblePosition = {
+        const panelData = floatingPanels.get(panelId);
+        if (panelData) {
+            panelData.bubblePosition = {
                 left: parseInt(bubble.style.left),
                 top: parseInt(bubble.style.top)
             };
@@ -3487,208 +4760,502 @@ function initBubbleEvents(bubble, panelId) {
         
         // 如果没有移动，才触发点击恢复面板
         if (!hasMoved) {
-            restoreFromBubble(panelId);
+            restoreFromMinimized(panelId);
         }
     };
     
     bubble.addEventListener('mousedown', onMouseDown);
 }
 
-function startBubbleDrag(e, panelId) {}
-function handleBubbleDrag(e) {}
-function stopBubbleDrag(e) {}
-
-function restoreFromBubble(panelId) {
-    const panelState = minimizedPanels.find(p => p.id === panelId);
-    if (!panelState) return;
+function initPanelDrag(panelId) {
+    const panelEl = document.getElementById(`floating-panel-${panelId}`);
+    if (!panelEl) return;
     
-    // 如果当前有显示的面板，先保存它的状态
-    if (floatingPanelVisible && currentPanelId !== null && currentPanelId !== panelId) {
-        saveCurrentPanelState();
-    }
-    
-    // 恢复选中的面板
-    const panel = document.getElementById('floating-panel');
-    const content = document.getElementById('floating-panel-content');
-    const iconEl = document.getElementById('floating-panel-icon');
-    const titleEl = document.getElementById('floating-panel-title-text');
-    
-    iconEl.textContent = panelState.icon;
-    titleEl.textContent = panelState.title;
-    content.innerHTML = panelState.content;
-    
-    // 恢复位置和大小
-    if (panelState.position) {
-        panel.style.left = panelState.position.left;
-        panel.style.top = panelState.position.top;
-        panel.style.width = panelState.position.width;
-        panel.style.height = panelState.position.height;
-    }
-    
-    panel.classList.add('active');
-    floatingPanelVisible = true;
-    currentPanelId = panelId;
-    
-    // 初始化拖拽和调整大小
-    initFloatingPanelDrag();
-    initFloatingPanelResize();
-    
-    // 重新渲染圆球（高亮当前选中的）
-    renderBubbles();
-}
-
-function removeBubble(panelId) {
-    minimizedPanels = minimizedPanels.filter(p => p.id !== panelId);
-    renderBubbles();
-}
-
-function removeBubbleAndRender(panelId) {
-    // 清理类型映射和缓冲区
-    const panelState = minimizedPanels.find(p => p.id === panelId);
-    if (panelState) {
-        panelIdByType.delete(panelState.title);
-    }
-    panelStreamBuffers.delete(panelId);
-    
-    // 如果删除的是当前显示的面板，关闭它
-    if (currentPanelId === panelId) {
-        const panel = document.getElementById('floating-panel');
-        panel.classList.remove('active');
-        floatingPanelVisible = false;
-        currentPanelId = null;
-    }
-    removeBubble(panelId);
-}
-
-function initFloatingPanelDrag() {
-    const panel = document.getElementById('floating-panel');
-    const header = document.getElementById('floating-panel-header');
+    const header = panelEl.querySelector('.floating-panel-header');
     
     header.onmousedown = function(e) {
         if (e.target.closest('.floating-panel-btn')) return;
         
-        isDragging = true;
-        dragOffset.x = e.clientX - panel.offsetLeft;
-        dragOffset.y = e.clientY - panel.offsetTop;
+        const panelData = floatingPanels.get(panelId);
+        if (panelData && panelData.isMaximized) return;
+        
+        dragState.isDragging = true;
+        dragState.panelId = panelId;
+        dragState.offset.x = e.clientX - panelEl.offsetLeft;
+        dragState.offset.y = e.clientY - panelEl.offsetTop;
         
         document.body.style.userSelect = 'none';
+        bringPanelToFront(panelId);
     };
-    
-    document.addEventListener('mousemove', handleFloatingPanelDrag);
-    document.addEventListener('mouseup', stopFloatingPanelDrag);
 }
 
-function handleFloatingPanelDrag(e) {
-    if (!isDragging) return;
+function initPanelResize(panelId) {
+    const panelEl = document.getElementById(`floating-panel-${panelId}`);
+    if (!panelEl) return;
     
-    const panel = document.getElementById('floating-panel');
-    let newLeft = e.clientX - dragOffset.x;
-    let newTop = e.clientY - dragOffset.y;
-    
-    // 边界限制
-    newLeft = Math.max(0, Math.min(newLeft, window.innerWidth - panel.offsetWidth));
-    newTop = Math.max(0, Math.min(newTop, window.innerHeight - 50));
-    
-    panel.style.left = newLeft + 'px';
-    panel.style.top = newTop + 'px';
-}
-
-function stopFloatingPanelDrag() {
-    if (isDragging) {
-        isDragging = false;
-        document.body.style.userSelect = '';
-    }
-}
-
-function initFloatingPanelResize() {
-    const panel = document.getElementById('floating-panel');
-    const resizers = panel.querySelectorAll('.floating-panel-resize');
+    const resizers = panelEl.querySelectorAll('.floating-panel-resize');
     
     resizers.forEach(resizer => {
         resizer.onmousedown = function(e) {
             e.preventDefault();
-            isResizing = true;
             
-            // 判断调整方向
+            const panelData = floatingPanels.get(panelId);
+            if (panelData && panelData.isMaximized) return;
+            
+            resizeState.isResizing = true;
+            resizeState.panelId = panelId;
+            
             if (resizer.classList.contains('corner-br')) {
-                resizeDirection = 'corner-br';
+                resizeState.direction = 'corner-br';
             } else if (resizer.classList.contains('corner-bl')) {
-                resizeDirection = 'corner-bl';
+                resizeState.direction = 'corner-bl';
             } else if (resizer.classList.contains('corner-tr')) {
-                resizeDirection = 'corner-tr';
+                resizeState.direction = 'corner-tr';
             } else if (resizer.classList.contains('corner-tl')) {
-                resizeDirection = 'corner-tl';
+                resizeState.direction = 'corner-tl';
             } else if (resizer.classList.contains('right')) {
-                resizeDirection = 'right';
+                resizeState.direction = 'right';
             } else if (resizer.classList.contains('left')) {
-                resizeDirection = 'left';
+                resizeState.direction = 'left';
             } else if (resizer.classList.contains('bottom')) {
-                resizeDirection = 'bottom';
+                resizeState.direction = 'bottom';
             } else if (resizer.classList.contains('top')) {
-                resizeDirection = 'top';
+                resizeState.direction = 'top';
             }
             
-            initialSize.width = panel.offsetWidth;
-            initialSize.height = panel.offsetHeight;
-            initialPos.x = e.clientX;
-            initialPos.y = e.clientY;
-            initialPos.left = panel.offsetLeft;
-            initialPos.top = panel.offsetTop;
+            resizeState.initialSize.width = panelEl.offsetWidth;
+            resizeState.initialSize.height = panelEl.offsetHeight;
+            resizeState.initialPos.x = e.clientX;
+            resizeState.initialPos.y = e.clientY;
+            resizeState.initialPos.left = panelEl.offsetLeft;
+            resizeState.initialPos.top = panelEl.offsetTop;
             
             document.body.style.userSelect = 'none';
+            bringPanelToFront(panelId);
         };
     });
-    
-    document.addEventListener('mousemove', handleFloatingPanelResize);
-    document.addEventListener('mouseup', stopFloatingPanelResize);
 }
 
-function handleFloatingPanelResize(e) {
-    if (!isResizing) return;
-    
-    const panel = document.getElementById('floating-panel');
-    const deltaX = e.clientX - initialPos.x;
-    const deltaY = e.clientY - initialPos.y;
-    
-    const minWidth = 350;
-    const minHeight = 250;
-    
-    // 右边调整
-    if (resizeDirection === 'right' || resizeDirection === 'corner-br' || resizeDirection === 'corner-tr') {
-        const newWidth = Math.max(minWidth, initialSize.width + deltaX);
-        panel.style.width = newWidth + 'px';
+// 全局鼠标移动和释放事件处理
+document.addEventListener('mousemove', function(e) {
+    // 处理拖拽
+    if (dragState.isDragging && dragState.panelId) {
+        const panelEl = document.getElementById(`floating-panel-${dragState.panelId}`);
+        if (!panelEl) return;
+        
+        let newLeft = e.clientX - dragState.offset.x;
+        let newTop = e.clientY - dragState.offset.y;
+        
+        newLeft = Math.max(0, Math.min(newLeft, window.innerWidth - panelEl.offsetWidth));
+        newTop = Math.max(0, Math.min(newTop, window.innerHeight - 50));
+        
+        panelEl.style.left = newLeft + 'px';
+        panelEl.style.top = newTop + 'px';
     }
     
-    // 左边调整
-    if (resizeDirection === 'left' || resizeDirection === 'corner-bl' || resizeDirection === 'corner-tl') {
-        const newWidth = Math.max(minWidth, initialSize.width - deltaX);
-        if (newWidth >= minWidth) {
-            panel.style.width = newWidth + 'px';
-            panel.style.left = (initialPos.left + deltaX) + 'px';
+    // 处理调整大小
+    if (resizeState.isResizing && resizeState.panelId) {
+        const panelEl = document.getElementById(`floating-panel-${resizeState.panelId}`);
+        if (!panelEl) return;
+        
+        const deltaX = e.clientX - resizeState.initialPos.x;
+        const deltaY = e.clientY - resizeState.initialPos.y;
+        
+        const minWidth = 350;
+        const minHeight = 250;
+        
+        if (resizeState.direction === 'right' || resizeState.direction === 'corner-br' || resizeState.direction === 'corner-tr') {
+            const newWidth = Math.max(minWidth, resizeState.initialSize.width + deltaX);
+            panelEl.style.width = newWidth + 'px';
+        }
+        
+        if (resizeState.direction === 'left' || resizeState.direction === 'corner-bl' || resizeState.direction === 'corner-tl') {
+            const newWidth = Math.max(minWidth, resizeState.initialSize.width - deltaX);
+            if (newWidth >= minWidth) {
+                panelEl.style.width = newWidth + 'px';
+                panelEl.style.left = (resizeState.initialPos.left + deltaX) + 'px';
+            }
+        }
+        
+        if (resizeState.direction === 'bottom' || resizeState.direction === 'corner-br' || resizeState.direction === 'corner-bl') {
+            const newHeight = Math.max(minHeight, resizeState.initialSize.height + deltaY);
+            panelEl.style.height = newHeight + 'px';
+        }
+        
+        if (resizeState.direction === 'top' || resizeState.direction === 'corner-tr' || resizeState.direction === 'corner-tl') {
+            const newHeight = Math.max(minHeight, resizeState.initialSize.height - deltaY);
+            if (newHeight >= minHeight) {
+                panelEl.style.height = newHeight + 'px';
+                panelEl.style.top = (resizeState.initialPos.top + deltaY) + 'px';
+            }
         }
     }
-    
-    // 下边调整
-    if (resizeDirection === 'bottom' || resizeDirection === 'corner-br' || resizeDirection === 'corner-bl') {
-        const newHeight = Math.max(minHeight, initialSize.height + deltaY);
-        panel.style.height = newHeight + 'px';
-    }
-    
-    // 上边调整
-    if (resizeDirection === 'top' || resizeDirection === 'corner-tr' || resizeDirection === 'corner-tl') {
-        const newHeight = Math.max(minHeight, initialSize.height - deltaY);
-        if (newHeight >= minHeight) {
-            panel.style.height = newHeight + 'px';
-            panel.style.top = (initialPos.top + deltaY) + 'px';
-        }
-    }
-}
+});
 
-function stopFloatingPanelResize() {
-    if (isResizing) {
-        isResizing = false;
-        resizeDirection = '';
+document.addEventListener('mouseup', function() {
+    if (dragState.isDragging) {
+        dragState.isDragging = false;
+        dragState.panelId = null;
         document.body.style.userSelect = '';
     }
+    
+    if (resizeState.isResizing) {
+        resizeState.isResizing = false;
+        resizeState.panelId = null;
+        resizeState.direction = '';
+        document.body.style.userSelect = '';
+    }
+});
+
+// 获取当前面板的内容元素（兼容旧代码）
+function getFloatingPanelContent() {
+    if (currentPanelId) {
+        const panelEl = document.getElementById(`floating-panel-${currentPanelId}`);
+        if (panelEl) {
+            return panelEl.querySelector('.floating-panel-content');
+        }
+    }
+    return document.getElementById('floating-panel-content');
 }
 
+// 保存当前面板状态（兼容旧代码）
+function saveCurrentPanelState() {
+    if (!currentPanelId) return;
+    
+    const panelEl = document.getElementById(`floating-panel-${currentPanelId}`);
+    if (!panelEl) return;
+    
+    const contentEl = panelEl.querySelector('.floating-panel-content');
+    const iconEl = panelEl.querySelector('.floating-panel-icon');
+    const titleEl = panelEl.querySelector('.floating-panel-title-text');
+    
+    if (!contentEl) return;
+    
+    // 更新 floatingPanels Map
+    const panelData = floatingPanels.get(currentPanelId);
+    if (panelData) {
+        panelData.content = contentEl.innerHTML;
+        panelData.position = {
+            left: parseInt(panelEl.style.left) || 0,
+            top: parseInt(panelEl.style.top) || 0,
+            width: parseInt(panelEl.style.width) || 400,
+            height: parseInt(panelEl.style.height) || 300
+        };
+        if (iconEl) panelData.icon = iconEl.textContent;
+        if (titleEl) panelData.title = titleEl.textContent;
+    }
+}
+
+// 兼容旧代码
+function restoreFromBubble(panelId) {
+    restoreFromMinimized(panelId);
+}
+
+function removeBubble(panelId) {
+    closeFloatingPanel(panelId);
+}
+
+function removeBubbleAndRender(panelId) {
+    closeFloatingPanel(panelId);
+}
+
+function startBubbleDrag(e, panelId) {}
+function handleBubbleDrag(e) {}
+function stopBubbleDrag(e) {}
+
+
+
+// ==================== 悬浮追问小人 & 追问小窗功能 ====================
+
+// 模块类型到显示名称的映射
+const MODULE_DISPLAY_NAMES = {
+    '思路': '智能审题',
+    '框架': '代码框架',
+    '伪代码': '伪代码',
+    '核心语句': '代码补全'
+};
+
+// 每个模块的追问聊天记录 { moduleType: [{role:'user'|'ai', content:'...'}] }
+let followupChatHistory = {};
+
+// 显示悬浮追问小人
+function showFloatingAvatar(moduleType) {
+    const avatar = document.getElementById('floating-avatar');
+    if (!avatar) return;
+    followupChatCurrentModule = moduleType;
+    avatar.classList.add('visible');
+
+    // 同步小窗位置到浮动面板高度
+    syncChatWindowPosition();
+}
+
+// 隐藏悬浮追问小人
+function hideFloatingAvatar() {
+    const avatar = document.getElementById('floating-avatar');
+    if (avatar) avatar.classList.remove('visible');
+    closeFollowupChat();
+    followupChatCurrentModule = null;
+}
+
+// 同步追问小窗位置，使其与浮动面板纵向对齐
+function syncChatWindowPosition() {
+    const chatWindow = document.getElementById('followup-chat-window');
+    if (!chatWindow) return;
+
+    // 找到当前激活的浮动面板
+    let activePanel = null;
+    if (currentPanelId) {
+        activePanel = document.getElementById(`floating-panel-${currentPanelId}`);
+    }
+    
+    if (activePanel && activePanel.classList.contains('active')) {
+        const rect = activePanel.getBoundingClientRect();
+        chatWindow.style.top = rect.top + 'px';
+        chatWindow.style.height = rect.height + 'px';
+    } else {
+        // 如果浮动面板不可见，使用屏幕中间区域
+        const screenH = window.innerHeight;
+        const chatH = Math.floor(screenH * 0.7);
+        chatWindow.style.top = Math.floor((screenH - chatH) / 2) + 'px';
+        chatWindow.style.height = chatH + 'px';
+    }
+}
+
+// 打开追问小窗
+function openFollowupChat() {
+    if (!followupChatCurrentModule) return;
+
+    const chatWindow = document.getElementById('followup-chat-window');
+    const moduleNameEl = document.getElementById('followup-chat-module-name');
+    const messagesEl = document.getElementById('followup-chat-messages');
+
+    const displayName = MODULE_DISPLAY_NAMES[followupChatCurrentModule] || followupChatCurrentModule;
+    moduleNameEl.textContent = displayName + ' · 追问';
+
+    syncChatWindowPosition();
+
+    // 渲染该模块的聊天历史
+    renderFollowupChatHistory(followupChatCurrentModule);
+
+    chatWindow.classList.add('active');
+
+    // 聚焦输入框
+    setTimeout(() => {
+        const input = document.getElementById('followup-chat-input');
+        if (input) input.focus();
+    }, 100);
+}
+
+// 关闭追问小窗
+function closeFollowupChat() {
+    const chatWindow = document.getElementById('followup-chat-window');
+    if (chatWindow) chatWindow.classList.remove('active');
+}
+
+// 最小化追问小窗（缩回小人）
+function minimizeFollowupChat() {
+    closeFollowupChat();
+    // 小人保持显示，用户可以再次点击打开
+}
+
+// 追问小窗拖动相关变量
+let isFollowupChatDragging = false;
+let followupChatDragOffset = { x: 0, y: 0 };
+
+// 初始化追问小窗拖动
+function initFollowupChatDrag() {
+    const chatWindow = document.getElementById('followup-chat-window');
+    const header = document.getElementById('followup-chat-header');
+    if (!chatWindow || !header) return;
+
+    header.addEventListener('mousedown', function(e) {
+        // 如果点击的是按钮，不触发拖动
+        if (e.target.closest('.followup-chat-btn') || e.target.closest('.followup-chat-controls')) {
+            return;
+        }
+        
+        isFollowupChatDragging = true;
+        const rect = chatWindow.getBoundingClientRect();
+        followupChatDragOffset.x = e.clientX - rect.left;
+        followupChatDragOffset.y = e.clientY - rect.top;
+        
+        document.body.style.userSelect = 'none';
+        chatWindow.style.cursor = 'grabbing';
+    });
+
+    document.addEventListener('mousemove', function(e) {
+        if (!isFollowupChatDragging) return;
+        
+        const chatWindow = document.getElementById('followup-chat-window');
+        if (!chatWindow) return;
+        
+        let newLeft = e.clientX - followupChatDragOffset.x;
+        let newTop = e.clientY - followupChatDragOffset.y;
+        
+        // 边界限制
+        const windowWidth = window.innerWidth;
+        const windowHeight = window.innerHeight;
+        const chatWidth = chatWindow.offsetWidth;
+        const chatHeight = chatWindow.offsetHeight;
+        
+        newLeft = Math.max(0, Math.min(newLeft, windowWidth - chatWidth));
+        newTop = Math.max(0, Math.min(newTop, windowHeight - chatHeight));
+        
+        chatWindow.style.left = newLeft + 'px';
+        chatWindow.style.top = newTop + 'px';
+        chatWindow.style.right = 'auto'; // 取消right定位，使用left
+    });
+
+    document.addEventListener('mouseup', function() {
+        if (isFollowupChatDragging) {
+            isFollowupChatDragging = false;
+            document.body.style.userSelect = '';
+            const chatWindow = document.getElementById('followup-chat-window');
+            if (chatWindow) chatWindow.style.cursor = '';
+        }
+    });
+}
+
+// 页面加载后初始化追问小窗拖动
+document.addEventListener('DOMContentLoaded', function() {
+    initFollowupChatDrag();
+});
+
+// 渲染追问聊天历史
+function renderFollowupChatHistory(moduleType) {
+    const messagesEl = document.getElementById('followup-chat-messages');
+    if (!messagesEl) return;
+
+    const history = followupChatHistory[moduleType] || [];
+
+    if (history.length === 0) {
+        const displayName = MODULE_DISPLAY_NAMES[moduleType] || moduleType;
+        messagesEl.innerHTML = `
+            <div class="followup-chat-empty">
+                <span class="empty-icon">💬</span>
+                对「${displayName}」有疑问？输入你的问题吧
+            </div>
+        `;
+        return;
+    }
+
+    messagesEl.innerHTML = '';
+    history.forEach(msg => {
+        const msgDiv = document.createElement('div');
+        msgDiv.className = 'followup-chat-msg ' + msg.role;
+        if (msg.role === 'ai') {
+            msgDiv.innerHTML = '<div class="markdown-body">' + renderMarkdown(msg.content) + '</div>';
+        } else {
+            msgDiv.textContent = msg.content;
+        }
+        messagesEl.appendChild(msgDiv);
+    });
+
+    // 滚动到底部
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+// 发送追问消息
+async function sendFollowupChat() {
+    const input = document.getElementById('followup-chat-input');
+    const sendBtn = document.getElementById('followup-chat-send-btn');
+    const messagesEl = document.getElementById('followup-chat-messages');
+    const question = input.value.trim();
+
+    if (!question || !followupChatCurrentModule) return;
+
+    // 初始化该模块的聊天记录
+    if (!followupChatHistory[followupChatCurrentModule]) {
+        followupChatHistory[followupChatCurrentModule] = [];
+    }
+
+    // 添加用户消息
+    followupChatHistory[followupChatCurrentModule].push({ role: 'user', content: question });
+    renderFollowupChatHistory(followupChatCurrentModule);
+
+    // 清空输入框并禁用
+    input.value = '';
+    sendBtn.disabled = true;
+    input.disabled = true;
+
+    // 添加AI加载占位
+    const aiMsgDiv = document.createElement('div');
+    aiMsgDiv.className = 'followup-chat-msg ai';
+    aiMsgDiv.innerHTML = '<div class="markdown-body"><p class="loading">AI正在思考...</p></div>';
+    messagesEl.appendChild(aiMsgDiv);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+
+    try {
+        const response = await fetch('/api/xiaohang/follow_up_question', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({
+                type: followupChatCurrentModule,
+                question: question
+            })
+        });
+
+        if (!response.ok) throw new Error('追问失败');
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let fullText = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            fullText += decoder.decode(value);
+            aiMsgDiv.innerHTML = '<div class="markdown-body">' + renderMarkdown(fullText) + '</div>';
+            highlightCode(aiMsgDiv);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+
+        // 保存AI回复到历史
+        followupChatHistory[followupChatCurrentModule].push({ role: 'ai', content: fullText });
+
+    } catch (error) {
+        console.error('追问失败:', error);
+        aiMsgDiv.innerHTML = '<div class="markdown-body"><p style="color:#e74c3c;">追问失败，请重试</p></div>';
+        // 移除失败的AI消息记录（用户消息保留）
+    } finally {
+        sendBtn.disabled = false;
+        input.disabled = false;
+        input.focus();
+    }
+}
+
+// 当浮动面板关闭时隐藏悬浮小人
+const _originalCloseFloatingPanel = closeFloatingPanel;
+closeFloatingPanel = function(panelId) {
+    _originalCloseFloatingPanel(panelId);
+    hideFloatingAvatar();
+};
+
+// 当浮动面板最小化时隐藏悬浮小人
+const _originalMinimizeFloatingPanel = minimizeFloatingPanel;
+minimizeFloatingPanel = function(panelId) {
+    _originalMinimizeFloatingPanel(panelId);
+    hideFloatingAvatar();
+};
+
+// 当切换到题目时隐藏悬浮小人
+const _originalShowContent = showContent;
+// 注意：showContent已经在全局定义，我们通过在showContent内部处理
+
+// 当生成新题目时，清空追问历史和所有面板
+const _originalGenerateProblem = generateProblem;
+generateProblem = async function() {
+    followupChatHistory = {};
+    hideFloatingAvatar();
+    // 关闭所有浮动面板
+    for (const panelId of floatingPanels.keys()) {
+        const panelEl = document.getElementById(`floating-panel-${panelId}`);
+        if (panelEl) panelEl.remove();
+    }
+    floatingPanels.clear();
+    panelIdByType.clear();
+    panelStreamBuffers.clear();
+    renderBubbles();
+    return _originalGenerateProblem();
+};

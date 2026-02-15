@@ -867,7 +867,7 @@
             height: auto;
         }
         
-        /* ==================== 代码分析模块样式 ==================== */
+        /* ==================== 伪代码模块样式 ==================== */
         
         /* 伪代码部分 */
         .pseudocode-section {
@@ -903,6 +903,175 @@
             display: flex;
             align-items: center;
             gap: 8px;
+        }
+
+        /* ==================== 伪代码美化渲染样式 ==================== */
+
+        /* 伪代码模块卡片 */
+        .pseudocode-module-card {
+            background: #ffffff;
+            border-radius: 14px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06), 0 1px 3px rgba(0, 0, 0, 0.04);
+            overflow: hidden;
+            border: 1px solid #e8ecf1;
+            transition: box-shadow 0.3s ease;
+        }
+
+        .pseudocode-module-card:hover {
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1), 0 2px 6px rgba(0, 0, 0, 0.06);
+        }
+
+        /* 模块标题栏 */
+        .pseudocode-module-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 14px 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #fff;
+            font-size: 15px;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+        }
+
+        .pseudocode-module-header .module-icon {
+            font-size: 18px;
+            flex-shrink: 0;
+        }
+
+        .pseudocode-module-header .module-number {
+            background: rgba(255,255,255,0.25);
+            border-radius: 6px;
+            padding: 2px 9px;
+            font-size: 12px;
+            font-weight: 700;
+            flex-shrink: 0;
+        }
+
+        /* 伪代码内容区 */
+        .pseudocode-body {
+            padding: 0;
+            background: #1b2033;
+            font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', 'Monaco', monospace;
+            font-size: 13.5px;
+            line-height: 1.75;
+            overflow-x: auto;
+        }
+
+        .pseudocode-body table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .pseudocode-body table td {
+            padding: 0;
+            vertical-align: top;
+        }
+
+        /* 行号列 */
+        .pseudocode-line-numbers {
+            width: 48px;
+            min-width: 48px;
+            background: #151929;
+            text-align: right;
+            padding: 16px 0;
+            user-select: none;
+            border-right: 1px solid #2a3050;
+        }
+
+        .pseudocode-line-numbers .line-num {
+            display: block;
+            padding: 0 12px 0 0;
+            color: #4a5280;
+            font-size: 12px;
+            line-height: 1.75;
+            height: calc(13.5px * 1.75);
+        }
+
+        /* 代码内容列 */
+        .pseudocode-lines {
+            padding: 16px 20px;
+        }
+
+        .pseudocode-line {
+            white-space: pre;
+            min-height: calc(13.5px * 1.75);
+            line-height: 1.75;
+            color: #c9d1d9;
+        }
+
+        /* 伪代码语法高亮 */
+        .pseudo-keyword {
+            color: #ff7b72;
+            font-weight: 700;
+        }
+
+        .pseudo-function {
+            color: #d2a8ff;
+            font-style: italic;
+        }
+
+        .pseudo-operator {
+            color: #79c0ff;
+            font-weight: 600;
+        }
+
+        .pseudo-number {
+            color: #79c0ff;
+        }
+
+        .pseudo-string {
+            color: #a5d6ff;
+        }
+
+        .pseudo-comment {
+            color: #8b949e;
+            font-style: italic;
+        }
+
+        .pseudo-variable {
+            color: #ffa657;
+        }
+
+        .pseudo-type {
+            color: #7ee787;
+        }
+
+        /* 伪代码底部操作栏 */
+        .pseudocode-footer {
+            display: flex;
+            justify-content: flex-end;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 14px;
+            background: #f7f8fa;
+            border-top: 1px solid #e8ecf1;
+        }
+
+        .pseudocode-footer-btn {
+            padding: 5px 12px;
+            background: #eef0f4;
+            border: 1px solid #dde0e6;
+            border-radius: 6px;
+            color: #555;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .pseudocode-footer-btn:hover {
+            background: #dde0e6;
+            color: #333;
+        }
+
+        .pseudocode-footer-btn.copied {
+            background: #d1fae5;
+            border-color: #6ee7b7;
+            color: #065f46;
         }
         
         /* 代码块容器 - 带复制按钮和主题切换 */
@@ -1169,6 +1338,21 @@
             pointer-events: none;
         }
         
+        /* 多浮动窗口容器 */
+        #floating-panels-container {
+            position: fixed;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1000;
+            pointer-events: none;
+        }
+        
+        #floating-panels-container .floating-panel {
+            pointer-events: auto;
+        }
+        
         /* 最小化圆球样式 */
         .minimized-bubble {
             width: 50px;
@@ -1391,6 +1575,302 @@
             0%, 100% { background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); }
             50% { background: linear-gradient(135deg, #fde68a 0%, #fbbf24 100%); }
         }
+
+        /* ==================== 悬浮追问小人样式 ==================== */
+        .floating-avatar {
+            position: fixed;
+            right: 32px;
+            top: 50%;
+            transform: translateY(-50%);
+            z-index: 1100;
+            cursor: pointer;
+            display: none;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .floating-avatar.visible {
+            display: block;
+        }
+
+        .floating-avatar-body {
+            width: 56px;
+            height: 56px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #7c3aed 0%, #a855f7 50%, #c084fc 100%);
+            box-shadow: 0 4px 20px rgba(124, 58, 237, 0.45), 0 0 0 4px rgba(124, 58, 237, 0.15);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            animation: avatarFloat 3s ease-in-out infinite;
+        }
+
+        .floating-avatar-body::before {
+            content: '';
+            position: absolute;
+            width: 64px;
+            height: 64px;
+            border-radius: 50%;
+            background: radial-gradient(circle, rgba(168, 85, 247, 0.2) 0%, transparent 70%);
+            animation: avatarGlow 2s ease-in-out infinite alternate;
+        }
+
+        .floating-avatar-body .avatar-icon {
+            font-size: 26px;
+            z-index: 1;
+            filter: drop-shadow(0 1px 2px rgba(0,0,0,0.2));
+        }
+
+        .floating-avatar:hover .floating-avatar-body {
+            transform: scale(1.12);
+            box-shadow: 0 6px 28px rgba(124, 58, 237, 0.55), 0 0 0 6px rgba(124, 58, 237, 0.2);
+        }
+
+        .floating-avatar-label {
+            position: absolute;
+            bottom: -22px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 11px;
+            color: #7c3aed;
+            font-weight: 600;
+            white-space: nowrap;
+            text-shadow: 0 1px 3px rgba(255,255,255,0.8);
+        }
+
+        @keyframes avatarFloat {
+            0%, 100% { transform: translateY(-50%); }
+            50% { transform: translateY(calc(-50% - 6px)); }
+        }
+
+        @keyframes avatarGlow {
+            0% { transform: scale(1); opacity: 0.6; }
+            100% { transform: scale(1.2); opacity: 0.2; }
+        }
+
+        /* ==================== 追问悬浮小窗样式 (Kiro紫色主题) ==================== */
+        .followup-chat-window {
+            position: fixed;
+            right: 100px;
+            z-index: 1100;
+            width: 380px;
+            background: #ffffff;
+            border: 2px solid #7c3aed;
+            border-radius: 16px;
+            box-shadow: 0 12px 40px rgba(124, 58, 237, 0.25);
+            display: none;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .followup-chat-window.active {
+            display: flex;
+        }
+
+        .followup-chat-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 16px;
+            background: linear-gradient(135deg, #7c3aed 0%, #a855f7 100%);
+            color: #fff;
+            flex-shrink: 0;
+            cursor: move;
+            user-select: none;
+        }
+
+        .followup-chat-header-title {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        .followup-chat-controls {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .followup-chat-btn {
+            width: 26px;
+            height: 26px;
+            border: none;
+            border-radius: 50%;
+            background: rgba(255,255,255,0.2);
+            color: #fff;
+            font-size: 14px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.2s;
+        }
+
+        .followup-chat-btn:hover {
+            background: rgba(255,255,255,0.35);
+        }
+
+        .followup-chat-btn.close-btn {
+            background: rgba(239, 68, 68, 0.8);
+        }
+
+        .followup-chat-btn.close-btn:hover {
+            background: rgba(220, 38, 38, 1);
+        }
+
+        .followup-chat-close {
+            width: 26px;
+            height: 26px;
+            border: none;
+            border-radius: 50%;
+            background: rgba(255,255,255,0.2);
+            color: #fff;
+            font-size: 14px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.2s;
+        }
+
+        .followup-chat-close:hover {
+            background: rgba(255,255,255,0.35);
+        }
+
+        .followup-chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+            background: #faf5ff;
+            min-height: 120px;
+        }
+
+        .followup-chat-messages::-webkit-scrollbar {
+            width: 5px;
+        }
+
+        .followup-chat-messages::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        .followup-chat-messages::-webkit-scrollbar-thumb {
+            background: rgba(124, 58, 237, 0.3);
+            border-radius: 3px;
+        }
+
+        .followup-chat-msg {
+            margin-bottom: 14px;
+            padding: 10px 14px;
+            border-radius: 12px;
+            font-size: 13.5px;
+            line-height: 1.7;
+            max-width: 92%;
+            word-break: break-word;
+        }
+
+        .followup-chat-msg.user {
+            background: linear-gradient(135deg, #7c3aed 0%, #a855f7 100%);
+            color: #fff;
+            margin-left: auto;
+            border-bottom-right-radius: 4px;
+        }
+
+        .followup-chat-msg.ai {
+            background: #fff;
+            color: #333;
+            border: 1px solid #e9d5ff;
+            border-bottom-left-radius: 4px;
+        }
+
+        .followup-chat-msg.ai .markdown-body {
+            color: #333;
+            background: transparent;
+            font-size: 13.5px;
+        }
+
+        .followup-chat-msg.ai .markdown-body h1,
+        .followup-chat-msg.ai .markdown-body h2,
+        .followup-chat-msg.ai .markdown-body h3 {
+            color: #7c3aed;
+        }
+
+        .followup-chat-msg.ai .markdown-body code {
+            background: rgba(124, 58, 237, 0.08);
+            color: #7c3aed;
+        }
+
+        .followup-chat-msg.ai .markdown-body pre {
+            background: #f5f0ff;
+            border: 1px solid #e9d5ff;
+        }
+
+        .followup-chat-input-area {
+            display: flex;
+            gap: 8px;
+            padding: 12px;
+            border-top: 1px solid #e9d5ff;
+            background: #fff;
+            flex-shrink: 0;
+        }
+
+        .followup-chat-input-area textarea {
+            flex: 1;
+            min-height: 108px;
+            max-height: 270px;
+            padding: 8px 12px;
+            border: 1.5px solid #d8b4fe;
+            border-radius: 10px;
+            font-size: 13px;
+            resize: none;
+            outline: none;
+            transition: border-color 0.2s;
+            font-family: inherit;
+        }
+
+        .followup-chat-input-area textarea:focus {
+            border-color: #7c3aed;
+        }
+
+        .followup-chat-input-area button {
+            padding: 8px 16px;
+            background: linear-gradient(135deg, #7c3aed 0%, #a855f7 100%);
+            color: #fff;
+            border: none;
+            border-radius: 10px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            white-space: nowrap;
+            align-self: flex-end;
+        }
+
+        .followup-chat-input-area button:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(124, 58, 237, 0.35);
+        }
+
+        .followup-chat-input-area button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .followup-chat-empty {
+            text-align: center;
+            color: #a78bfa;
+            font-size: 13px;
+            padding: 30px 20px;
+        }
+
+        .followup-chat-empty .empty-icon {
+            font-size: 36px;
+            display: block;
+            margin-bottom: 10px;
+        }
     </style>
 </head>
 <body>
@@ -1419,11 +1899,11 @@
                         <button class="toolbar-btn" data-type="思路" onclick="showContent('思路')">
                             <span class="icon">💭</span>智能审题
                         </button>
-                        <button class="toolbar-btn" data-type="伪代码" onclick="showContent('伪代码')">
-                            <span class="icon">📋</span>代码分析
-                        </button>
                         <button class="toolbar-btn" data-type="框架" onclick="showContent('框架')">
                             <span class="icon">🏗️</span>代码框架
+                        </button>
+                        <button class="toolbar-btn" data-type="伪代码" onclick="showContent('伪代码')">
+                            <span class="icon">📋</span>伪代码
                         </button>
                         <button class="toolbar-btn" data-type="核心语句" onclick="showContent('核心语句')">
                             <span class="icon">🔑</span>代码补全
@@ -1515,32 +1995,41 @@
     <!-- 最小化圆球容器 -->
     <div id="minimized-bubbles-container" class="minimized-bubbles-container"></div>
     
-    <!-- 浮动窗口 -->
-    <div id="floating-panel" class="floating-panel">
-        <div class="floating-panel-header" id="floating-panel-header">
-            <div class="floating-panel-title">
-                <span id="floating-panel-icon">💭</span>
-                <span id="floating-panel-title-text">智能审题</span>
-            </div>
-            <div class="floating-panel-controls">
-                <button class="floating-panel-btn minimize" onclick="minimizeFloatingPanel()" title="最小化">−</button>
-                <button class="floating-panel-btn maximize" id="floating-panel-maximize-btn" onclick="maximizeFloatingPanel()" title="最大化">□</button>
-                <button class="floating-panel-btn close" onclick="closeFloatingPanel()" title="关闭">×</button>
-            </div>
-        </div>
-        <div class="floating-panel-content markdown-body" id="floating-panel-content">
-            <p class="loading">正在加载...</p>
-        </div>
-        <div class="floating-panel-resize right"></div>
-        <div class="floating-panel-resize left"></div>
-        <div class="floating-panel-resize bottom"></div>
-        <div class="floating-panel-resize top"></div>
-        <div class="floating-panel-resize corner-br"></div>
-        <div class="floating-panel-resize corner-bl"></div>
-        <div class="floating-panel-resize corner-tr"></div>
-        <div class="floating-panel-resize corner-tl"></div>
-    </div>
+    <!-- 多浮动窗口容器 -->
+    <div id="floating-panels-container"></div>
     
     <script src="/static/hangfudao.js"></script>
+
+    <!-- 悬浮追问小人 -->
+    <div id="floating-avatar" class="floating-avatar" onclick="openFollowupChat()">
+        <div class="floating-avatar-body">
+            <span class="avatar-icon">🤖</span>
+        </div>
+        <span class="floating-avatar-label">追问</span>
+    </div>
+
+    <!-- 追问悬浮小窗 -->
+    <div id="followup-chat-window" class="followup-chat-window">
+        <div class="followup-chat-header" id="followup-chat-header">
+            <div class="followup-chat-header-title">
+                <span>💬</span>
+                <span id="followup-chat-module-name">模块追问</span>
+            </div>
+            <div class="followup-chat-controls">
+                <button class="followup-chat-btn" onclick="minimizeFollowupChat()" title="最小化">−</button>
+                <button class="followup-chat-btn close-btn" onclick="closeFollowupChat()" title="关闭">×</button>
+            </div>
+        </div>
+        <div class="followup-chat-messages" id="followup-chat-messages">
+            <div class="followup-chat-empty">
+                <span class="empty-icon">💬</span>
+                对当前模块有疑问？输入你的问题吧
+            </div>
+        </div>
+        <div class="followup-chat-input-area">
+            <textarea id="followup-chat-input" placeholder="输入你的追问..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendFollowupChat();}"></textarea>
+            <button id="followup-chat-send-btn" onclick="sendFollowupChat()">发送</button>
+        </div>
+    </div>
 </body>
 </html>

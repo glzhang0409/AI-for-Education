@@ -233,7 +233,7 @@ class DecompositionNavigator {
     initRoot(data) {
         this.tree = {
             name: data.parentProblem || '主问题',
-            level: 1,
+            level: data.level || 0,
             data: data,
             children: data.subProblems?.map((sub, index) => ({
                 name: sub.name,
@@ -1221,7 +1221,7 @@ const FrameworkVisualizer = {
             <div class="current-level-info">
                 <div class="level-header">
                     <div class="level-badge">
-                        <span class="level-number">第${data.level || 1}层</span>
+                        <span class="level-number">第${data.level || 0}层</span>
                         <span class="level-label">分解</span>
                     </div>
                     <div class="level-problem">
@@ -1304,7 +1304,7 @@ const FrameworkVisualizer = {
                     <span style="font-size: 20px;">📊</span>
                     整体ISPO分析
                 </h5>
-                ${IPOCardGenerator.generateCard(data.overallIPO, 'sequence', data.parentProblem || '整体问题', data.level || 1)}
+                ${IPOCardGenerator.generateCard(data.overallIPO, 'sequence', data.parentProblem || '整体问题', data.level || 0)}
             </div>
             ` : ''}
             
@@ -1358,12 +1358,12 @@ const FrameworkVisualizer = {
                     sub.ipo || { input: '待定义', storage: '待定义', process: '待定义', output: '待定义' },
                     sub.controlType || 'sequence',
                     sub.name || `子模块${index + 1}`,
-                    data.level || 1
+                    data.level || 0
                 );
                 
                 // 如果需要进一步分解，显示用户交互提示
                 if (sub.needsFurtherDecomposition !== false) {
-                    html += UserPromptGenerator.generateCanWritePrompt(sub, index, data.level || 1, currentPath.join('_'));
+                    html += UserPromptGenerator.generateCanWritePrompt(sub, index, data.level || 0, currentPath.join('_'));
                 } else {
                     // 简单模块，显示语句建议
                     if (sub.codeHint) {

@@ -36,9 +36,9 @@ DIFFICULTY_PROMPTS = {
 # 模块依赖关系定义
 GUIDANCE_DEPENDENCIES = {
     '思路': [],                          # 思路无依赖，直接基于标准答案
-    '伪代码': ['思路'],                    # 伪代码依赖思路（代码分析）
-    '框架': ['思路', '伪代码'],            # 框架依赖思路和伪代码（智能审题+代码分析）
-    '核心语句': ['思路', '伪代码', '框架']  # 核心语句依赖所有前置模块
+    '框架': ['思路'],                     # 框架依赖思路（智能审题）
+    '伪代码': ['思路', '框架'],            # 伪代码依赖思路和框架（智能审题+代码框架）
+    '核心语句': ['思路', '框架', '伪代码']  # 核心语句依赖所有前置模块
 }
 
 def get_redis_client():
@@ -96,6 +96,94 @@ def clear_all_guidance_outputs(session_id):
     for guidance_type in GUIDANCE_DEPENDENCIES.keys():
         key = f"xiaohang_guidance_output:{session_id}:{guidance_type}"
         redis_client.delete(key)
+    # 同时清理叶子节点缓存
+    leaf_key = f"xiaohang_framework_leaves:{session_id}"
+    redis_client.delete(leaf_key)
+
+
+def extract_leaf_nodes_from_framework(framework_text):
+    """从框架JSON文本中提取叶子节点（needsFurtherDecomposition=false的子问题）
+    
+    如果所有子问题都不需要继续分解，则它们就是叶子节点。
+    如果某些子问题需要继续分解，则它们不是叶子节点（等待用户进一步分解后更新）。
+    """
+    import re
+    try:
+        json_match = re.search(r'```json\s*([\s\S]*?)\s*```', framework_text)
+        if json_match:
+            data = json.loads(json_match.group(1))
+        else:
+            first_brace = framework_text.index('{')
+            last_brace = framework_text.rindex('}')
+            data = json.loads(framework_text[first_brace:last_brace + 1])
+        
+        if not data or 'subProblems' not in data:
+            return []
+        
+        leaf_nodes = []
+        for sub in data.get('subProblems', []):
+            if not sub.get('needsFurtherDecomposition', True):
+                leaf_nodes.append({
+                    'name': sub.get('name', ''),
+                    'description': sub.get('description', ''),
+                    'controlType': sub.get('controlType', 'sequence'),
+                    'ipo': sub.get('ipo', {}),
+                    'codeHint': sub.get('codeHint', '')
+                })
+            else:
+                # 需要继续分解的节点暂时也加入，标记为待分解
+                leaf_nodes.append({
+                    'name': sub.get('name', ''),
+                    'description': sub.get('description', ''),
+                    'controlType': sub.get('controlType', 'sequence'),
+                    'ipo': sub.get('ipo', {}),
+                    'codeHint': sub.get('codeHint', ''),
+                    'pendingDecomposition': True
+                })
+        
+        return leaf_nodes
+    except Exception as e:
+        print(f"提取叶子节点失败: {e}")
+        return []
+
+
+def format_leaf_nodes_for_prompt(leaf_nodes):
+    """将叶子节点列表格式化为提示词中的约束文本"""
+    if not leaf_nodes:
+        return ""
+    
+    # 过滤掉待分解的节点，只保留真正的叶子节点
+    final_leaves = [n for n in leaf_nodes if not n.get('pendingDecomposition', False)]
+    if not final_leaves:
+        return ""
+    
+    ctrl_icons = {'sequence': '📋 顺序结构', 'selection': '🔀 选择结构', 'loop': '🔄 循环结构'}
+    
+    text = "【代码框架最终分解结果 - 叶子节点列表（伪代码和代码补全必须与此一一对应）】：\n"
+    text += f"共 {len(final_leaves)} 个最终子模块，按执行顺序排列：\n\n"
+    
+    for i, node in enumerate(final_leaves, 1):
+        ctrl = ctrl_icons.get(node.get('controlType', 'sequence'), '📋 顺序结构')
+        text += f"第{i}部分：{node['name']}（{ctrl}）\n"
+        if node.get('description'):
+            text += f"  描述：{node['description']}\n"
+        ipo = node.get('ipo', {})
+        if ipo.get('input'):
+            text += f"  输入：{ipo['input']}\n"
+        if ipo.get('storage'):
+            text += f"  存储：{ipo['storage']}\n"
+        if ipo.get('process'):
+            text += f"  处理：{ipo['process']}\n"
+        if ipo.get('output'):
+            text += f"  输出：{ipo['output']}\n"
+        text += "\n"
+    
+    text += "【一致性要求】：\n"
+    text += f"1. 伪代码必须严格按照上述 {len(final_leaves)} 个子模块的顺序组织，每个子模块对应伪代码中的一个逻辑块\n"
+    text += f"2. 代码补全的结构必须与上述 {len(final_leaves)} 个子模块一一对应\n"
+    text += "3. 正确答案的代码结构也必须能映射到上述子模块\n"
+    
+    return text
 
 @xiaohang_enhanced_bp.route('/init_session', methods=['POST'])
 def init_session():
@@ -450,7 +538,7 @@ def get_guidance():
 ```json
 {{
     "parentProblem": "问题描述",
-    "level": 1,
+    "level": 0,
     "subProblems": [
         {{
             "name": "模块名",
@@ -487,6 +575,7 @@ def get_guidance():
 4. storage字段必须具体说明建议使用的数据结构或变量类型，不能为空或写"无"
 5. needsFurtherDecomposition：简单模块设为false，复杂模块设为true
 6. 简单模块的codeHint必须是建议性的自然语言描述，用"可以考虑""建议"等引导语气，提供多种可能的实现思路，绝对禁止直接给出代码或单一确定的方案
+7. 【禁止】不要生成"全局定义模块"、"头文件引用模块"、"main函数模块"等与程序框架结构相关的模块，这些模块由系统自动添加。你只需要分解核心算法逻辑和功能模块（如数据输入、数据处理、结果输出等）
 
 【storage字段示例】：
 - "建议使用数组存储n个操作数据，用整型变量记录操作总数"
@@ -498,21 +587,52 @@ def get_guidance():
                 specific_instruction = """
 【框架模块特殊要求】：
 基于标准答案的代码结构进行分解，确保分解出的模块与标准答案的实现结构一致。
-框架必须与已生成的思路和伪代码保持一致，是思路和伪代码的结构化表达。
+框架必须与已生成的智能审题（思路）保持一致，是思路的结构化表达。
+框架分解出的逻辑块必须能够直接对应到后续伪代码的逻辑块，保持严格一致。
 再次强调：ipo字段必须包含input、storage、process、output四个字段，这是ISPO模型的核心要求。
+【再次强调禁止】：不要在subProblems中生成任何关于"全局定义"、"头文件引用(#include)"、"宏定义(#define)"、"main函数"的模块，这些由系统自动添加。只分解核心算法逻辑模块。
 """
                 
             elif guidance_type == '伪代码':
                 system_prompt = system_prompts.get('伪代码', '')
-                specific_instruction = """
+                # 获取叶子节点约束
+                leaf_key = f"xiaohang_framework_leaves:{session_id}"
+                leaf_data = redis_client.get(leaf_key)
+                leaf_constraint_text = ""
+                if leaf_data:
+                    leaf_nodes = json.loads(leaf_data.decode('utf-8'))
+                    leaf_constraint_text = format_leaf_nodes_for_prompt(leaf_nodes)
+                specific_instruction = f"""
 【伪代码模块特殊要求】：
-基于标准答案的算法逻辑，生成对应的伪代码。
-伪代码必须与已生成的思路保持一致，是思路的逻辑细化。
-伪代码的逻辑流程应该能够直接映射到标准答案的代码。
+基于标准答案的算法逻辑，按代码框架模块划分，为每个模块生成对应的伪代码。
+伪代码必须与已生成的智能审题（思路）和代码框架保持严格一致。
+伪代码的每个逻辑块必须与代码框架分解出的模块一一对应。
+伪代码的逻辑流程应该能够直接映射到标准答案的代码，也能直接映射到代码补全的结构。
+不要在最后添加复杂度分析，只输出伪代码内容。
+
+【输出格式强制要求】：
+- 每个代码框架模块单独输出，先写模块名称标题，再输出该模块的伪代码块（使用```pseudocode标记）
+- 伪代码使用 if-then-else-end if、for-do-end for、while-do-end while 等控制结构
+- 赋值使用 ← 符号，用 // 添加中文注释
+- 禁止使用任何具体编程语言语法（如C的printf/scanf/malloc/#include/花括号/分号，Python的print/def/import等）
+- 用自然语言动作词代替语言特定函数（如"输出(result)"代替printf，"读取输入(str)"代替scanf）
+
+【极其重要 - 必须包含可执行逻辑语句】：
+每个伪代码块的主体必须是具体的逻辑操作语句（赋值←、条件if-then、循环for-do等），注释//只是辅助说明。
+绝对禁止输出只有注释没有逻辑语句的伪代码块。
+
+{leaf_constraint_text}
 """
                 
             elif guidance_type == '核心语句':
                 system_prompt = system_prompts.get('核心语句', '')
+                # 获取叶子节点约束
+                leaf_key = f"xiaohang_framework_leaves:{session_id}"
+                leaf_data = redis_client.get(leaf_key)
+                leaf_constraint_text = ""
+                if leaf_data:
+                    leaf_nodes = json.loads(leaf_data.decode('utf-8'))
+                    leaf_constraint_text = format_leaf_nodes_for_prompt(leaf_nodes)
                 specific_instruction = f"""
 【代码补全模块特殊要求】：
 基于标准答案，生成一份带有 TODO 标记的不完整代码。
@@ -520,6 +640,9 @@ def get_guidance():
 {'使用 // TODO: 在这里补全代码：xxx 格式' if language == 'C' else '使用 # TODO: 在这里补全代码：xxx 格式'}
 只输出一份代码，不要分开展示完整代码和补全部分。
 代码补全必须与已生成的框架逻辑一致。
+代码中的每个功能块必须与代码框架的叶子节点一一对应。
+
+{leaf_constraint_text}
 """
             
             else:
@@ -567,9 +690,246 @@ def get_guidance():
     return Response(stream_with_context(generate_response()), mimetype='text/event-stream')
 
 
+@xiaohang_enhanced_bp.route('/pregenerate_all', methods=['POST'])
+def pregenerate_all():
+    """当用户点击智能审题时，后台预生成正确答案、框架、伪代码、核心语句"""
+    session_id = session.get('xiaohang_session_id')
+    if not session_id:
+        return jsonify({"error": "会话未初始化"}), 400
+    
+    redis_client = get_redis_client()
+    problem_key = f"xiaohang_problem:{session_id}"
+    problem_data = redis_client.get(problem_key)
+    
+    if not problem_data:
+        return jsonify({"error": "未找到当前题目"}), 400
+    
+    problem_info = json.loads(problem_data.decode('utf-8'))
+    current_problem = problem_info['problem']
+    standard_answer = problem_info.get('standard_answer', '')
+    topics = problem_info['topics']
+    language = session.get('xiaohang_language', 'C')
+    
+    def generate_all():
+        try:
+            llm = get_llm(session.get('xiaohang_model', 'xhang'))
+            system_prompts_map = get_system_prompts(language)
+            lang_code_block = 'c' if language == 'C' else 'python'
+            lang_desc = 'C语言' if language == 'C' else 'Python'
+            
+            # 等待标准答案生成完成（可能还在generate_problem中生成）
+            max_wait = 60
+            waited = 0
+            while waited < max_wait:
+                problem_data_check = redis_client.get(problem_key)
+                if problem_data_check:
+                    info_check = json.loads(problem_data_check.decode('utf-8'))
+                    if info_check.get('standard_answer', ''):
+                        standard_answer_final = info_check['standard_answer']
+                        break
+                time.sleep(1)
+                waited += 1
+            else:
+                standard_answer_final = standard_answer
+            
+            yield json.dumps({"status": "generating", "module": "框架"}) + "\n"
+            
+            # === 1. 生成框架（依赖：思路） ===
+            thought_output = ""
+            thought_key = f"xiaohang_guidance_output:{session_id}:思路"
+            # 等待思路生成完成
+            max_wait_thought = 120
+            waited_t = 0
+            while waited_t < max_wait_thought:
+                thought_data = redis_client.get(thought_key)
+                if thought_data:
+                    thought_output = thought_data.decode('utf-8')
+                    break
+                time.sleep(1)
+                waited_t += 1
+            
+            constraint_parts = []
+            if standard_answer_final:
+                constraint_parts.append(f"【标准答案（内部参考，用于保证一致性，不要直接展示给学生）】：\n{standard_answer_final}")
+            if thought_output:
+                constraint_parts.append(f"【已生成的解题思路】：\n{thought_output}")
+            constraint_context_framework = "\n\n".join(constraint_parts)
+            
+            framework_system_prompt = f"""你是一名程序设计教学专家。请将问题分解为子模块。
+
+【极其重要 - ISPO模型】：
+本系统采用 ISPO 模型（不是 IPO！），每个模块必须包含四个维度：
+- I (Input)：输入 - 该模块需要什么输入数据
+- S (Storage)：存储 - 建议使用什么数据结构或变量来存储数据
+- P (Process)：处理 - 如何处理数据
+- O (Output)：输出 - 产生什么输出
+
+【重要】：你必须输出一个用 ```json 和 ``` 包裹的JSON对象，格式如下：
+
+```json
+{{
+    "parentProblem": "问题描述",
+    "level": 0,
+    "subProblems": [
+        {{
+            "name": "模块名",
+            "description": "描述",
+            "controlType": "sequence",
+            "ipo": {{
+                "input": "输入数据",
+                "storage": "存储结构建议",
+                "process": "处理方式",
+                "output": "输出"
+            }},
+            "needsFurtherDecomposition": false,
+            "codeHint": "建议性的语句提示"
+        }}
+    ],
+    "overallIPO": {{
+        "input": "总输入",
+        "storage": "整体存储结构",
+        "process": "总处理",
+        "output": "总输出"
+    }}
+}}
+```
+
+【controlType取值】：sequence、selection、loop
+
+【分解要求】：
+1. 分解为2-4个子模块
+2. 每个模块标注controlType
+3. ipo必须包含input、storage、process、output四个字段
+4. storage字段必须具体说明数据结构或变量类型
+5. codeHint必须是建议性自然语言描述
+6. 【禁止】不要生成"全局定义模块"、"头文件引用模块"、"main函数模块"等与程序框架结构相关的模块，这些模块由系统自动添加。你只需要分解核心算法逻辑和功能模块（如数据输入、数据处理、结果输出等）
+
+题目知识点：{', '.join(topics)}"""
+
+            framework_prompt = f"""{framework_system_prompt}
+
+【重要约束 - 一致性要求】：
+你的输出必须与标准答案保持高度一致。框架分解出的模块必须与标准答案的代码结构一一对应。
+
+【框架模块特殊要求】：
+基于标准答案的代码结构进行分解，确保分解出的模块与标准答案的实现结构一致。
+框架分解出的逻辑块必须能够直接对应到后续伪代码的逻辑块，保持严格一致。
+【再次强调禁止】：不要在subProblems中生成任何关于"全局定义"、"头文件引用(#include)"、"宏定义(#define)"、"main函数"的模块，这些由系统自动添加。只分解核心算法逻辑模块。
+
+{constraint_context_framework}
+
+【题目】：
+{current_problem}
+
+请开始提供指导（确保与标准答案和前置模块保持一致）："""
+
+            framework_output = ""
+            for piece in llm._call(framework_prompt):
+                framework_output += piece
+            save_guidance_output(session_id, '框架', framework_output)
+            
+            # 提取框架的叶子节点并保存，供伪代码和代码补全使用
+            initial_leaf_nodes = extract_leaf_nodes_from_framework(framework_output)
+            if initial_leaf_nodes:
+                leaf_key = f"xiaohang_framework_leaves:{session_id}"
+                redis_client.setex(leaf_key, 3600, json.dumps(initial_leaf_nodes, ensure_ascii=False))
+            leaf_constraint_text = format_leaf_nodes_for_prompt(initial_leaf_nodes)
+            
+            yield json.dumps({"status": "done", "module": "框架"}) + "\n"
+            yield json.dumps({"status": "generating", "module": "伪代码"}) + "\n"
+            
+            # === 2. 生成伪代码（依赖：思路 + 框架 + 叶子节点约束） ===
+            constraint_parts_pseudo = list(constraint_parts)
+            constraint_parts_pseudo.append(f"【已生成的程序框架】：\n{framework_output}")
+            constraint_context_pseudo = "\n\n".join(constraint_parts_pseudo)
+            
+            pseudo_system_prompt = system_prompts_map.get('伪代码', '')
+            pseudo_prompt = f"""{pseudo_system_prompt}
+
+【重要约束 - 一致性要求】：
+你的输出必须与标准答案和前置模块的输出保持高度一致。
+伪代码的每个逻辑块必须与代码框架分解出的模块一一对应。
+
+【伪代码模块特殊要求】：
+基于标准答案的算法逻辑，按代码框架模块划分，为每个模块生成对应的伪代码。
+伪代码必须与已生成的智能审题（思路）和代码框架保持严格一致。
+伪代码的逻辑流程应该能够直接映射到标准答案的代码，也能直接映射到代码补全的结构。
+不要在最后添加复杂度分析，只输出伪代码内容。
+
+【输出格式强制要求】：
+- 每个代码框架模块单独输出，先写模块名称标题，再输出该模块的伪代码块（使用```pseudocode标记）
+- 伪代码使用 if-then-else-end if、for-do-end for、while-do-end while 等控制结构
+- 赋值使用 ← 符号，用 // 添加中文注释
+- 禁止使用任何具体编程语言语法（如C的printf/scanf/malloc/#include/花括号/分号，Python的print/def/import等）
+- 用自然语言描述功能代替语言特定函数（如"输出结果"代替printf，"读取输入"代替scanf）
+
+【极其重要 - 必须包含可执行逻辑语句】：
+每个伪代码块的主体必须是具体的逻辑操作语句（赋值←、条件if-then、循环for-do等），注释//只是辅助说明。
+绝对禁止输出只有注释没有逻辑语句的伪代码块。
+
+{leaf_constraint_text}
+
+{constraint_context_pseudo}
+
+【题目】：
+{current_problem}
+
+请开始提供指导（确保与标准答案和代码框架叶子节点保持一致，伪代码的每个逻辑块必须与框架叶子节点一一对应）："""
+
+            pseudo_output = ""
+            for piece in llm._call(pseudo_prompt):
+                pseudo_output += piece
+            save_guidance_output(session_id, '伪代码', pseudo_output)
+            
+            yield json.dumps({"status": "done", "module": "伪代码"}) + "\n"
+            yield json.dumps({"status": "generating", "module": "核心语句"}) + "\n"
+            
+            # === 3. 生成核心语句/代码补全（依赖：思路 + 框架 + 伪代码 + 叶子节点约束） ===
+            constraint_parts_core = list(constraint_parts_pseudo)
+            constraint_parts_core.append(f"【已生成的伪代码】：\n{pseudo_output}")
+            constraint_context_core = "\n\n".join(constraint_parts_core)
+            
+            core_system_prompt = system_prompts_map.get('核心语句', '')
+            todo_format = '使用 // TODO: 在这里补全代码：xxx 格式' if language == 'C' else '使用 # TODO: 在这里补全代码：xxx 格式'
+            core_prompt = f"""{core_system_prompt}
+
+【重要约束 - 一致性要求】：
+你的输出必须与标准答案和前置模块的输出保持高度一致。
+
+【代码补全模块特殊要求】：
+基于标准答案，生成一份带有 TODO 标记的不完整代码。
+将标准答案中2-3个关键算法部分替换为 TODO 注释标记。
+{todo_format}
+只输出一份代码，不要分开展示完整代码和补全部分。
+代码补全必须与已生成的伪代码和框架逻辑严格一致。
+代码中的每个功能块必须与代码框架的叶子节点一一对应，用注释标明对应关系。
+
+{leaf_constraint_text}
+
+{constraint_context_core}
+
+【题目】：
+{current_problem}
+
+请开始提供指导（确保与标准答案和代码框架叶子节点保持一致，代码的每个功能块必须与框架叶子节点一一对应）："""
+
+            core_output = ""
+            for piece in llm._call(core_prompt):
+                core_output += piece
+            save_guidance_output(session_id, '核心语句', core_output)
+            
+            yield json.dumps({"status": "done", "module": "核心语句"}) + "\n"
+            yield json.dumps({"status": "all_done"}) + "\n"
+            
+        except Exception as e:
+            yield json.dumps({"status": "error", "message": str(e)}) + "\n"
+    
+    return Response(stream_with_context(generate_all()), mimetype='text/event-stream')
+
+
 @xiaohang_enhanced_bp.route('/decompose_problem', methods=['POST'])
 def decompose_problem():
-    """层次化问题分解 - 新增API"""
+    """层次化问题分解 - 支持多层递归分解"""
     session_id = session.get('xiaohang_session_id')
     if not session_id:
         def error_response():
@@ -578,8 +938,11 @@ def decompose_problem():
     
     data = request.json
     level = data.get('level', 1)  # 分解层级
-    parent_problem = data.get('parentProblem', '')  # 父问题描述
-    sub_problem_index = data.get('subProblemIndex', None)  # 要继续分解的子问题索引
+    parent_problem = data.get('parentProblem', '')  # 父问题名称
+    parent_description = data.get('parentDescription', '')  # 父问题描述
+    parent_ipo = data.get('parentIpo', {})  # 父问题的ISPO信息
+    parent_control_type = data.get('parentControlType', 'sequence')  # 父问题的控制结构
+    decomposition_path = data.get('decompositionPath', [])  # 从根到当前的分解路径
     
     # 获取当前题目
     redis_client = get_redis_client()
@@ -593,27 +956,45 @@ def decompose_problem():
     
     problem_info = json.loads(problem_data.decode('utf-8'))
     current_problem = problem_info['problem']
+    standard_answer = problem_info.get('standard_answer', '')
     topics = problem_info['topics']
+    language = session.get('xiaohang_language', 'C')
     
-    # 获取之前的分解历史
-    decomposition_key = f"xiaohang_decomposition:{session_id}"
-    decomposition_history = redis_client.get(decomposition_key)
+    # 构建分解历史上下文
+    path_context = ""
+    if decomposition_path and len(decomposition_path) > 0:
+        path_context = "\n【分解历史路径】：\n"
+        for i, node in enumerate(decomposition_path):
+            indent = "  " * i
+            ctrl_icon = {'sequence': '📋', 'selection': '🔀', 'loop': '🔄'}.get(node.get('controlType', 'sequence'), '📋')
+            path_context += f"{indent}L{node.get('layer', i)}: {ctrl_icon} {node.get('name', '未命名')}\n"
+            if node.get('description'):
+                path_context += f"{indent}   描述: {node.get('description')}\n"
+            ipo = node.get('ipo', {})
+            if ipo:
+                if ipo.get('input'): path_context += f"{indent}   输入: {ipo.get('input')}\n"
+                if ipo.get('storage'): path_context += f"{indent}   存储: {ipo.get('storage')}\n"
+                if ipo.get('process'): path_context += f"{indent}   处理: {ipo.get('process')}\n"
+                if ipo.get('output'): path_context += f"{indent}   输出: {ipo.get('output')}\n"
     
-    previous_decomposition = ""
-    if decomposition_history:
-        prev_data = json.loads(decomposition_history.decode('utf-8'))
-        if sub_problem_index is not None and 'subProblems' in prev_data:
-            # 获取要继续分解的子问题
-            if sub_problem_index < len(prev_data['subProblems']):
-                sub = prev_data['subProblems'][sub_problem_index]
-                parent_problem = sub.get('name', '') + ': ' + sub.get('description', '')
-        previous_decomposition = f"\n【之前的分解结果】：\n{json.dumps(prev_data, ensure_ascii=False, indent=2)}\n"
+    # 构建当前要分解的模块上下文
+    current_module_context = f"""
+【当前要继续分解的模块】：
+- 模块名称: {parent_problem}
+- 模块描述: {parent_description if parent_description else '无'}
+- 控制结构: {parent_control_type}
+- ISPO信息:
+  * 输入(I): {parent_ipo.get('input', '无')}
+  * 存储(S): {parent_ipo.get('storage', '无')}
+  * 处理(P): {parent_ipo.get('process', '无')}
+  * 输出(O): {parent_ipo.get('output', '无')}
+"""
     
     def generate_response():
         try:
             prompt = f"""你是一名专业的程序设计教学专家，精通"自顶向下、逐步求精"的结构化程序设计方法。
 
-请对以下问题进行第{level}层分解。这是学生表示"还不能写出代码"后的进一步细化分解。
+请对以下模块进行第{level}层分解。这是学生表示"还不能写出代码"后的进一步细化分解。
 
 【核心程序设计思想】：
 1. 任何程序都由三种基本控制结构组成：顺序、选择、循环
@@ -632,21 +1013,23 @@ def decompose_problem():
 【原始题目】：
 {current_problem}
 
-【当前要继续分解的问题】：
-{parent_problem if parent_problem else current_problem}
-{previous_decomposition}
+【标准答案（内部参考，用于保证分解与实现一致，不要直接展示给学生）】：
+{standard_answer if standard_answer else '暂无'}
+{path_context}
+{current_module_context}
 
 【第{level}层分解要求】：
-1. 将当前问题分解为2-4个更小的子模块
-2. 每个子模块的粒度要比上一层更细
-3. 明确标注控制结构类型和ISPO（ipo字段必须包含input、storage、process、output四个键）
-4. 判断每个子模块是否已经足够简单（needsFurtherDecomposition）
-5. 对于简单的子模块，提供建议性的语句提示（codeHint），用"可以考虑""建议"等引导语气，不给确定性方案，绝对禁止直接给出代码
+1. 将当前模块「{parent_problem}」分解为2-4个更小的子模块
+2. 每个子模块的粒度要比上一层更细，更接近可直接编码的程度
+3. 分解必须基于父模块的ISPO信息，子模块的输入输出要与父模块衔接
+4. 明确标注控制结构类型和ISPO（ipo字段必须包含input、storage、process、output四个键）
+5. 判断每个子模块是否已经足够简单（needsFurtherDecomposition）
+6. 对于简单的子模块，提供建议性的语句提示（codeHint），用"可以考虑""建议"等引导语气，不给确定性方案，绝对禁止直接给出代码
 
 【输出格式】（严格JSON）：
 ```json
 {{
-    "parentProblem": "当前分解的问题描述",
+    "parentProblem": "{parent_problem}",
     "level": {level},
     "subProblems": [
         {{
@@ -654,20 +1037,20 @@ def decompose_problem():
             "description": "具体要完成的任务",
             "controlType": "sequence|selection|loop",
             "ipo": {{
-                "input": "需要什么输入",
-                "storage": "建议使用什么数据结构/变量来存储（必填，不能省略！例如：用数组存储元素、用整型变量记录计数等）",
+                "input": "需要什么输入（必须与父模块衔接）",
+                "storage": "建议使用什么数据结构/变量来存储（必填！）",
                 "process": "如何处理（自然语言）",
-                "output": "产生什么输出"
+                "output": "产生什么输出（必须与父模块衔接）"
             }},
             "needsFurtherDecomposition": true或false,
-            "codeHint": "建议性的语句提示，用引导性语气描述可能的实现思路（禁止给出代码，禁止单一确定的方案）"
+            "codeHint": "建议性的语句提示（禁止给出代码）"
         }}
     ],
     "overallIPO": {{
-        "input": "本层整体输入",
-        "storage": "本层整体存储结构建议（必填！例如：需要栈结构管理数据、需要数组存储输入等）",
+        "input": "本层整体输入（应与父模块输入一致）",
+        "storage": "本层整体存储结构建议",
         "process": "本层整体处理流程",
-        "output": "本层整体输出"
+        "output": "本层整体输出（应与父模块输出一致）"
     }}
 }}
 ```
@@ -683,11 +1066,11 @@ def decompose_problem():
 - 控制结构：只有单一控制结构（纯顺序/单层条件/单层循环）
 - 变量数量：涉及 ≤3 个变量
 - 简单模块示例：
-  * 可以考虑声明整型变量并初始化累加器
-  * 建议使用格式化输入/输出的方式读取或打印数据
-  * 可以通过条件判断来比较两个值的大小关系，也可以考虑其他比较方式
-  * 建议使用循环结构（如for或while）遍历数组元素并逐个累加
-  * 可以考虑对栈/队列执行一次基本操作（如入栈、出栈等）
+  * 声明整型变量并初始化
+  * 使用格式化输入/输出读取或打印数据
+  * 通过条件判断比较两个值的大小关系
+  * 使用单层循环遍历数组元素
+  * 对栈/队列执行一次基本操作（如入栈、出栈）
 
 设为 true（需要继续分解）的情况：
 - 嵌套结构：循环嵌套、条件嵌套、循环+条件嵌套
@@ -695,11 +1078,6 @@ def decompose_problem():
 - 复杂数据操作：涉及多个指针、多次遍历
 - 算法核心逻辑：排序、查找、递归的核心部分
 - 边界处理复杂：需要考虑多种边界情况
-- 复杂模块示例：
-  * 嵌套循环（如冒泡排序的双重循环）
-  * 递归调用（如二叉树遍历）
-  * 多指针操作（如链表反转）
-  * 完整的排序/查找算法
 
 【codeHint 要求 - 极其重要】：
 - codeHint 必须是建议性的自然语言描述，用"可以考虑"、"建议"等引导性语气
@@ -707,15 +1085,14 @@ def decompose_problem():
 - 绝对禁止在 codeHint 中出现任何代码片段、代码关键字、变量名、函数调用
 - 正确示例："可以考虑使用循环结构（如for或while）来遍历数组元素，逐个累加求和"
 - 正确示例："建议通过条件判断来比较两个数的大小关系，也可以考虑用三元运算的思路"
-- 正确示例："这里需要从标准输入读取数据，可以考虑使用格式化输入的方式"
-- 错误示例（禁止，太确定）："使用for循环遍历数组"（没有提及while等替代方案）
-- 错误示例（禁止，是代码）："scanf(\"%d\", &n);"
-- 错误示例（禁止，是代码）："for (int i = 0; i < n; i++) sum += arr[i];"
+- 错误示例（禁止）："使用for循环遍历数组"
+- 错误示例（禁止）："scanf(\"%d\", &n);"
 
 题目知识点：{', '.join(topics)}
+编程语言：{language}
 
-请进行第{level}层分解，确保比上一层更加细化。
-再次提醒：每个ipo对象必须包含input、storage、process、output四个字段，这是ISPO模型的核心要求，storage字段不可省略！"""
+请进行第{level}层分解，确保比上一层更加细化，且与父模块的ISPO信息保持衔接。
+再次提醒：每个ipo对象必须包含input、storage、process、output四个字段！"""
             
             # 调用AI模型
             llm = get_llm(session.get('xiaohang_model', 'xhang'))
@@ -724,12 +1101,14 @@ def decompose_problem():
                 full_response += content_piece
                 yield content_piece
             
-            # 尝试解析并存储分解结果
+            # 尝试解析并存储分解结果（用于追踪）
             try:
                 import re
                 json_match = re.search(r'```json\s*([\s\S]*?)\s*```', full_response)
                 if json_match:
                     decomposition_data = json.loads(json_match.group(1))
+                    # 存储当前层级的分解结果
+                    decomposition_key = f"xiaohang_decomposition:{session_id}:L{level}:{parent_problem[:20]}"
                     redis_client.setex(
                         decomposition_key,
                         3600,
@@ -759,6 +1138,143 @@ def get_decomposition_history():
         return jsonify(json.loads(decomposition_history.decode('utf-8')))
     else:
         return jsonify({"message": "暂无分解历史"})
+
+
+@xiaohang_enhanced_bp.route('/save_framework_leaf_nodes', methods=['POST'])
+def save_framework_leaf_nodes():
+    """前端在用户完成所有分解后，将最终叶子节点列表发送到后端保存"""
+    session_id = session.get('xiaohang_session_id')
+    if not session_id:
+        return jsonify({"error": "会话未初始化"}), 400
+    
+    data = request.json
+    leaf_nodes = data.get('leafNodes', [])
+    
+    if not leaf_nodes:
+        return jsonify({"error": "叶子节点列表为空"}), 400
+    
+    redis_client = get_redis_client()
+    leaf_key = f"xiaohang_framework_leaves:{session_id}"
+    redis_client.setex(leaf_key, 3600, json.dumps(leaf_nodes, ensure_ascii=False))
+    
+    return jsonify({"message": "叶子节点已保存", "count": len(leaf_nodes)})
+
+
+@xiaohang_enhanced_bp.route('/regenerate_with_leaf_nodes', methods=['POST'])
+def regenerate_with_leaf_nodes():
+    """基于最终叶子节点重新生成伪代码和代码补全，确保一一对应"""
+    session_id = session.get('xiaohang_session_id')
+    if not session_id:
+        return jsonify({"error": "会话未初始化"}), 400
+    
+    data = request.json
+    target_module = data.get('module', '')  # '伪代码' 或 '核心语句'
+    
+    if target_module not in ('伪代码', '核心语句'):
+        return jsonify({"error": "无效的模块类型"}), 400
+    
+    redis_client = get_redis_client()
+    
+    # 获取叶子节点
+    leaf_key = f"xiaohang_framework_leaves:{session_id}"
+    leaf_data = redis_client.get(leaf_key)
+    if not leaf_data:
+        return jsonify({"error": "未找到叶子节点数据，请先完成框架分解"}), 400
+    
+    leaf_nodes = json.loads(leaf_data.decode('utf-8'))
+    leaf_constraint = format_leaf_nodes_for_prompt(leaf_nodes)
+    
+    # 获取题目和标准答案
+    problem_key = f"xiaohang_problem:{session_id}"
+    problem_data = redis_client.get(problem_key)
+    if not problem_data:
+        return jsonify({"error": "未找到当前题目"}), 400
+    
+    problem_info = json.loads(problem_data.decode('utf-8'))
+    current_problem = problem_info['problem']
+    standard_answer = problem_info.get('standard_answer', '')
+    topics = problem_info['topics']
+    language = session.get('xiaohang_language', 'C')
+    
+    # 获取前置模块输出
+    previous_outputs = get_previous_guidance_outputs(session_id, target_module)
+    constraint_context = build_constraint_context(previous_outputs, standard_answer)
+    
+    def generate_response():
+        try:
+            llm = get_llm(session.get('xiaohang_model', 'xhang'))
+            system_prompts_map = get_system_prompts(language)
+            
+            if target_module == '伪代码':
+                system_prompt = system_prompts_map.get('伪代码', '')
+                specific_instruction = f"""
+【伪代码模块特殊要求 - 基于最终分解结果】：
+基于标准答案的算法逻辑，按代码框架叶子节点划分，为每个模块生成对应的伪代码。
+伪代码必须与代码框架的最终分解结果（叶子节点）严格一一对应。
+不要在最后添加复杂度分析，只输出伪代码内容。
+
+【输出格式强制要求】：
+- 每个叶子节点模块单独输出，先写模块名称标题，再输出该模块的伪代码块（使用```pseudocode标记）
+- 伪代码使用 if-then-else-end if、for-do-end for、while-do-end while 等控制结构
+- 赋值使用 ← 符号，用 // 添加中文注释
+- 禁止使用任何具体编程语言语法（如C的printf/scanf/malloc/#include/花括号/分号，Python的print/def/import等）
+- 用自然语言描述功能代替语言特定函数（如"输出结果"代替printf，"读取输入"代替scanf）
+
+【极其重要 - 必须包含可执行逻辑语句】：
+每个伪代码块的主体必须是具体的逻辑操作语句（赋值←、条件if-then、循环for-do等），注释//只是辅助说明。
+绝对禁止输出只有注释没有逻辑语句的伪代码块。
+
+【极其重要 - 结构一致性】：
+伪代码的每个代码块必须与下面列出的代码框架叶子节点一一对应。
+每个叶子节点对应一个独立的模块标题+伪代码块。
+
+{leaf_constraint}
+"""
+            else:  # 核心语句
+                system_prompt = system_prompts_map.get('核心语句', '')
+                todo_format = '使用 // TODO: 在这里补全代码：xxx 格式' if language == 'C' else '使用 # TODO: 在这里补全代码：xxx 格式'
+                specific_instruction = f"""
+【代码补全模块特殊要求 - 基于最终分解结果】：
+基于标准答案，生成一份带有 TODO 标记的不完整代码。
+代码的整体结构必须与代码框架的最终分解结果（叶子节点）严格一一对应。
+{todo_format}
+只输出一份代码，不要分开展示完整代码和补全部分。
+
+【极其重要 - 结构一致性】：
+代码中的每个功能块必须与下面列出的代码框架叶子节点一一对应。
+在代码中用注释标明每个部分对应的叶子节点名称。
+
+{leaf_constraint}
+"""
+            
+            prompt = f"""{system_prompt}
+
+【重要约束 - 一致性要求】：
+你的输出必须与标准答案和代码框架的最终分解结果保持高度一致。
+代码框架已经完成了所有层级的分解，最终的叶子节点就是程序的基本构建块。
+你的输出必须与这些叶子节点一一对应。
+
+{specific_instruction}
+
+{constraint_context}
+
+【题目】：
+{current_problem}
+
+请开始生成（确保与代码框架叶子节点一一对应）："""
+            
+            full_response = ""
+            for content_piece in llm._call(prompt):
+                full_response += content_piece
+                yield content_piece
+            
+            # 保存输出
+            save_guidance_output(session_id, target_module, full_response)
+            
+        except Exception as e:
+            yield f"错误: {str(e)}"
+    
+    return Response(stream_with_context(generate_response()), mimetype='text/event-stream')
 
 @xiaohang_enhanced_bp.route('/get_correct_answer', methods=['POST'])
 def get_correct_answer():
@@ -885,6 +1401,23 @@ def follow_up_question():
                     history_text += f"\nAI: {msg['content']}\n"
             
             # 构建追问提示词
+            module_question_hints = {
+                '思路': '围绕题目理解、ISPO分析、输入输出、解题思路等方面提出引导性问题，不要询问是否需要展示其他模块内容',
+                '框架': '围绕代码框架结构、函数划分、模块设计等方面提出引导性问题，不要询问是否需要展示其他模块内容',
+                '伪代码': '围绕伪代码逻辑、算法步骤、流程控制等方面提出引导性问题，不要询问是否需要展示其他模块内容',
+                '核心语句': '围绕关键代码语句、语法细节、代码补全等方面提出引导性问题，不要询问是否需要展示其他模块内容'
+            }
+            
+            module_next_step_hints = {
+                '思路': '如果学生表示理解清楚了，可以建议他点击「代码框架」继续学习',
+                '框架': '如果学生表示理解清楚了，可以建议他点击「伪代码」继续学习',
+                '伪代码': '如果学生表示理解清楚了，可以建议他点击「代码补全」继续练习',
+                '核心语句': '如果学生表示理解清楚了，可以建议他在右侧编辑器中编写完整代码并提交测试'
+            }
+            
+            question_hint = module_question_hints.get(guidance_type, '围绕当前模块内容提出引导性问题')
+            next_step_hint = module_next_step_hints.get(guidance_type, '')
+            
             prompt = f"""你是一名智能AI助教，正在为学生提供【{guidance_type}】阶段的指导。
 
 【题目】：
@@ -902,7 +1435,9 @@ def follow_up_question():
 1. 回答要针对学生的具体问题
 2. 继续使用问题引导学生思考
 3. 不要直接给出完整答案，要引导学生自己思考
-4. 保持在【{guidance_type}】阶段的指导范围内
+4. 严格保持在【{guidance_type}】阶段的指导范围内
+5. 回答结束后，{question_hint}
+6. {next_step_hint}
 
 请开始回答："""
             
@@ -1316,11 +1851,37 @@ def get_guidance_status():
     return jsonify(status)
 
 
+@xiaohang_enhanced_bp.route('/get_pregenerated', methods=['POST'])
+def get_pregenerated():
+    """获取已预生成的模块内容（框架、伪代码、核心语句）"""
+    session_id = session.get('xiaohang_session_id')
+    if not session_id:
+        def error_response():
+            yield "错误: 会话未初始化"
+        return Response(stream_with_context(error_response()), mimetype='text/event-stream')
+    
+    data = request.json
+    guidance_type = data.get('type', '')
+    
+    redis_client = get_redis_client()
+    key = f"xiaohang_guidance_output:{session_id}:{guidance_type}"
+    cached = redis_client.get(key)
+    
+    if cached:
+        def return_cached():
+            yield cached.decode('utf-8')
+        return Response(stream_with_context(return_cached()), mimetype='text/event-stream')
+    else:
+        def not_ready():
+            yield "错误: 该模块尚未生成完成，请稍候"
+        return Response(stream_with_context(not_ready()), mimetype='text/event-stream')
+
+
 # ==================== 脚手架理论新增功能 ====================
 
 @xiaohang_enhanced_bp.route('/generate_counterexample', methods=['POST'])
 def generate_counterexample():
-    """反例生成器 - 构造最小反例帮助学生发现问题"""
+    """反例生成器 - 构造随机反例帮助学生发现问题"""
     session_id = session.get('xiaohang_session_id')
     if not session_id:
         def error_response():
@@ -1361,7 +1922,7 @@ def generate_counterexample():
 
 **核心理念：**
 最好的老师往往是一个"让代码崩溃的输入"。
-你的任务是构造一个**最小反例 (Minimal Counter-example)**，让学生能够清楚地看到自己代码的问题。
+你的任务是构造一个**随机反例 (Random Counter-example)**，让学生能够清楚地看到自己代码的问题。
 
 【题目】：
 {current_problem}
@@ -1387,8 +1948,8 @@ def generate_counterexample():
 ### 1. 问题定位
 首先，简要说明你发现的代码问题（1-2句话）。
 
-### 2. 最小反例
-构造一个**最简单**的输入，能够暴露代码的问题：
+### 2. 随机反例
+构造一个**随机**的输入，能够暴露代码的问题：
 
 **测试输入：**
 ```
@@ -1404,19 +1965,6 @@ def generate_counterexample():
 ```
 [学生代码会产生的错误输出]
 ```
-
-### 3. 引导性问题
-用苏格拉底式提问引导学生思考：
-- "你的代码在处理这个输入时，会发生什么？"
-- "为什么会产生这个结果？"
-- "你能想到如何修复这个问题吗？"
-
-### 4. 边界情况提示
-列出其他可能需要考虑的边界情况（不直接给答案）：
-- 空输入？
-- 单元素？
-- 最大/最小值？
-- 重复元素？
 
 请生成反例："""
             
